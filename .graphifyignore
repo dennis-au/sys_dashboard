@@ -1,0 +1,5 @@
+# Graphify development state and dashboard build artifacts are never corpus inputs.
+.git/
+.graphify/
+graphify-out/
+node_modules/

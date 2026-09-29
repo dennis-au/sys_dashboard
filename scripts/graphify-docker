@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+state_dir="$root/.graphify"
+source_dir="$state_dir/source"
+env_file="$state_dir/docker.env"
+compose_file="$root/graphify.compose.yaml"
+patch_file="$root/scripts/graphify-responses.patch"
+graph_file="$root/graphify-out/graph.json"
+graph_root_file="$root/graphify-out/.graphify_root"
+source_url="https://github.com/Graphify-Labs/graphify.git"
+source_commit="4c21b15e9beeba5faa6871ad7dd188571a6fbb84"
+
+mkdir -p "$state_dir" "$root/graphify-out"
+chmod 700 "$state_dir"
+
+if [[ ! -f "$env_file" ]]; then
+  project_id="$(printf '%s' "$root" | shasum -a 256 | cut -c1-12)"
+  port=$((19000 + (16#${project_id:0:4} % 1000)))
+  printf 'COMPOSE_PROJECT_NAME=graphify-%s\nGRAPHIFY_PORT=%s\n' "$project_id" "$port" > "$env_file"
+fi
+
+if [[ -f "$state_dir/provider.env" ]]; then
+  provider_env="$state_dir/provider.env"
+else
+  provider_env="${CODEX_HOME:-$HOME/.codex}/graphify/provider.env"
+fi
+
+validate_provider() {
+  if [[ ! -f "$provider_env" ]]; then
+    printf 'Missing provider credential file: %s\n' "$provider_env" >&2
+    return 1
+  fi
+  if [[ "$(stat -f '%Lp' "$provider_env")" != "600" ]]; then
+    printf 'Provider credential file must have mode 0600: %s\n' "$provider_env" >&2
+    return 1
+  fi
+  if ! rg -q '^GRAPHIFY_OPENAI_API_KEY=.+$' "$provider_env"; then
+    printf 'Provider credential file must define GRAPHIFY_OPENAI_API_KEY.\n' >&2
+    return 1
+  fi
+}
+
+bootstrap_source() {
+  if [[ ! -d "$source_dir/.git" ]]; then
+    git clone --depth 1 "$source_url" "$source_dir"
+  fi
+  if [[ "$(git -C "$source_dir" rev-parse HEAD)" != "$source_commit" ]]; then
+    printf 'Graphify source is not pinned to the expected commit. Remove only %s after preserving any local changes, then retry.\n' "$source_dir" >&2
+    return 1
+  fi
+  if git -C "$source_dir" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+    return 0
+  fi
+  git -C "$source_dir" apply --check "$patch_file"
+  git -C "$source_dir" apply "$patch_file"
+}
+
+export GRAPHIFY_UID="$(id -u)"
+export GRAPHIFY_GID="$(id -g)"
+export GRAPHIFY_PROVIDER_ENV="$provider_env"
+
+compose() {
+  docker compose --env-file "$env_file" --env-file "$provider_env" -f "$compose_file" "$@"
+}
+
+build_image() {
+  validate_provider
+  bootstrap_source
+  compose build graphify-build
+}
+
+refresh_graph() {
+  build_image
+  compose run --rm --no-deps --entrypoint python graphify-build -c '
+import os
+from openai import OpenAI
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], base_url=os.environ["OPENAI_BASE_URL"], timeout=30, max_retries=0)
+response = client.responses.create(model=os.environ["OPENAI_MODEL"], input="Reply with OK.", max_output_tokens=8)
+if not (getattr(response, "output_text", "") or "").strip():
+    raise RuntimeError("Responses API returned no output text")
+print("Responses provider check passed.")
+'
+  compose run --rm graphify-build
+}
+
+port="$(sed -n 's/^GRAPHIFY_PORT=//p' "$env_file")"
+
+wait_for_mcp() {
+  local payload
+  payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"graphify-docker","version":"1.0"}}}'
+  for _ in {1..20}; do
+    if curl --fail --silent --max-time 2 --request POST "http://127.0.0.1:${port}/mcp" \
+      --header 'Accept: application/json, text/event-stream' \
+      --header 'Content-Type: application/json' \
+      --header 'MCP-Protocol-Version: 2025-03-26' \
+      --data "$payload" >/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  printf 'Graphify started but the MCP endpoint did not become ready. Run %s logs.\n' "$0" >&2
+  return 1
+}
+
+case "${1:-}" in
+  refresh)
+    refresh_graph
+    ;;
+  start)
+    if [[ ! -f "$graph_file" ]] || [[ ! -f "$graph_root_file" ]] || [[ "$(cat "$graph_root_file")" != "/workspace/knowledge/ovirt" ]]; then
+      refresh_graph
+    else
+      build_image
+    fi
+    compose up -d --no-build graphify-server
+    wait_for_mcp
+    printf 'Graphify MCP: http://127.0.0.1:%s/mcp\n' "$port"
+    ;;
+  stop)
+    compose down
+    ;;
+  status)
+    compose ps
+    ;;
+  logs)
+    compose logs --tail=100 graphify-server
+    ;;
+  url)
+    printf 'http://127.0.0.1:%s/mcp\n' "$port"
+    ;;
+  *)
+    printf 'Usage: %s {refresh|start|stop|status|logs|url}\n' "$0" >&2
+    exit 64
+    ;;
+esac

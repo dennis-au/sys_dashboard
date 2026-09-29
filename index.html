@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f5f6f1" />
+    <title>Sentinel | Infrastructure Inventory</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Primary navigation">
+        <a class="brand" href="#overview" aria-label="Sentinel home">
+          <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span>sentinel</span>
+        </a>
+
+        <nav class="main-nav">
+          <a class="nav-item active" href="#overview" data-view="overview">
+            <span class="icon" data-icon="grid"></span>Overview
+          </a>
+          <a class="nav-item" href="#dashboards" data-view="dashboards">
+            <span class="icon" data-icon="grid"></span>Dashboards
+          </a>
+          <a class="nav-item" href="#inventory" data-view="inventory">
+            <span class="icon" data-icon="server"></span>Inventory
+            <span class="nav-count" id="host-count">0</span>
+          </a>
+          <a class="nav-item" href="#managers" data-view="managers">
+            <span class="icon" data-icon="network"></span>OLVM managers
+            <span class="nav-count" id="manager-count">0</span>
+          </a>
+          <a class="nav-item" href="#collections" data-view="collections">
+            <span class="icon" data-icon="history"></span>Collections
+          </a>
+          <a class="nav-item" href="#credentials" data-view="credentials">
+            <span class="icon" data-icon="key"></span>Credentials
+            <span class="nav-count" id="credential-count">0</span>
+          </a>
+          <a class="nav-item" href="#alerts" data-view="alerts">
+            <span class="icon" data-icon="alert"></span>Alerts
+            <span class="nav-count" id="alert-count">0</span>
+          </a>
+        </nav>
+
+        <div class="sidebar-bottom">
+          <a class="nav-item" href="#settings" data-view="settings">
+            <span class="icon" data-icon="settings"></span>Settings
+          </a>
+          <div class="operator">
+            <div class="avatar">SO</div>
+            <div>
+              <strong>Sentinel operator</strong>
+              <span>Authentication not configured</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div class="page-heading">
+            <p class="eyebrow">Infrastructure</p>
+            <h1 id="page-title">Fleet overview</h1>
+          </div>
+          <div class="topbar-actions">
+            <div class="last-sync"><span class="sync-dot"></span><span>Last collection <strong id="last-sync-time">Loading summary</strong></span></div>
+            <button class="icon-button" aria-label="Notifications" disabled title="Notifications are not configured"><span class="icon" data-icon="bell"></span></button>
+            <button class="primary-button" id="collect-button" disabled><span class="icon" data-icon="refresh"></span><span>Run collection</span></button>
+          </div>
+        </header>
+
+        <section class="view active" id="overview-view">
+          <section class="metrics-grid" aria-label="Fleet health summary">
+            <article class="metric-card">
+              <div class="metric-top"><span class="metric-label">Managed hosts</span><span class="metric-icon teal"><span class="icon" data-icon="server"></span></span></div>
+              <div class="metric-value" id="metric-hosts">--</div>
+              <div class="metric-note" id="metric-hosts-note">Loading operational summary</div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-top"><span class="metric-label">Collection health</span><span class="metric-icon moss"><span class="icon" data-icon="activity"></span></span></div>
+              <div class="metric-value" id="metric-collection-health">--</div>
+              <div class="metric-note" id="metric-collection-note">Loading operational summary</div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-top"><span class="metric-label">Open alerts</span><span class="metric-icon coral"><span class="icon" data-icon="alert"></span></span></div>
+              <div class="metric-value" id="metric-alerts">--</div>
+              <div class="metric-note" id="metric-alert-note">Loading operational summary</div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-top"><span class="metric-label">Fleet capacity</span><span class="metric-icon amber"><span class="icon" data-icon="hard-drive"></span></span></div>
+              <div class="metric-value" id="metric-capacity">--</div>
+              <div class="metric-note" id="metric-capacity-note">Loading operational summary</div>
+            </article>
+          </section>
+
+          <section class="overview-grid">
+            <article class="panel host-health-panel">
+              <div class="panel-heading">
+                <div><h2>Host health</h2><p>Current state across all managed systems</p></div>
+                <button class="text-button" data-go-to="inventory">View inventory <span class="icon" data-icon="arrow-right"></span></button>
+              </div>
+              <div class="health-content">
+                <div class="health-ring" id="health-ring" aria-label="Operational summary loading"><div class="health-ring-inner"><strong id="health-ring-value">--</strong><small id="health-ring-label">loading</small></div></div>
+                <div class="health-legend">
+                  <div><span class="legend-dot healthy"></span><span>Healthy</span><strong id="health-healthy">--</strong></div>
+                  <div><span class="legend-dot warning-dot"></span><span>Needs review</span><strong id="health-review">--</strong></div>
+                  <div><span class="legend-dot offline"></span><span>Unreachable</span><strong id="health-unreachable">--</strong></div>
+                </div>
+              </div>
+              <div class="health-footer" id="health-footer"><span class="icon" data-icon="clock"></span> <strong>Summary loading</strong></div>
+            </article>
+
+            <article class="panel activity-panel">
+              <div class="panel-heading">
+                <div><h2>Collection activity</h2><p id="activity-description">Recent operational activity</p></div>
+                <button class="icon-button subtle" aria-label="More collection options" disabled title="Collection options are not configured"><span class="icon" data-icon="more"></span></button>
+              </div>
+              <div class="summary-activity-list" id="summary-activity-list" aria-live="polite"></div>
+            </article>
+          </section>
+
+          <section class="lower-grid">
+            <article class="panel hosts-panel">
+              <div class="panel-heading">
+                <div><h2>Hosts needing review</h2><p>Systems with current issues or stale data</p></div>
+                <button class="text-button" data-go-to="inventory">View all <span class="icon" data-icon="arrow-right"></span></button>
+              </div>
+              <div class="host-mini-list" id="attention-list"></div>
+            </article>
+
+            <article class="panel alerts-panel">
+              <div class="panel-heading">
+                <div><h2>Recent alerts</h2><p>Latest signals from the fleet</p></div>
+                <button class="text-button" data-go-to="alerts">All alerts <span class="icon" data-icon="arrow-right"></span></button>
+              </div>
+              <div class="alert-list" id="overview-alert-list" aria-live="polite"></div>
+            </article>
+          </section>
+        </section>
+
+        <section class="view simple-view" id="dashboards-view">
+          <section class="grafana-command-bar">
+            <div>
+              <h2>Grafana dashboards</h2>
+              <p>Dashboards are composed and maintained in Grafana</p>
+            </div>
+            <div class="grafana-command-actions">
+              <button class="outline-button" id="open-grafana-button" disabled title="Grafana is not deployed in this local build"><span class="icon" data-icon="arrow-right"></span>Grafana unavailable</button>
+              <button class="primary-button" id="open-grafana-builder-button" disabled title="Dashboard composition is available after Grafana is deployed"><span class="icon" data-icon="plus"></span>Build unavailable</button>
+            </div>
+          </section>
+
+          <section class="grafana-connection-card">
+            <span class="grafana-mark">G</span>
+            <div class="grafana-connection-copy"><strong>Grafana</strong><span>Dashboard catalog only in this local build</span></div>
+            <dl class="grafana-connection-meta"><div><dt>Data source</dt><dd>Planned: PostgreSQL · sentinel_db.reporting</dd></div><div><dt>Access</dt><dd>Not deployed</dd></div></dl>
+            <span class="integration-state"><span></span>Planned</span>
+          </section>
+
+          <section class="grafana-dashboard-grid" id="grafana-dashboard-grid"></section>
+        </section>
+
+        <section class="view" id="inventory-view">
+          <section class="inventory-toolbar">
+            <label class="search-field"><span class="icon" data-icon="search"></span><input id="host-search" type="search" aria-label="Search hosts" autocomplete="off" /></label>
+            <label class="toolbar-select"><span class="icon" data-icon="sliders"></span><select id="host-status-filter" aria-label="Host status"><option value="all">All statuses</option><option value="healthy">Healthy</option><option value="review">Needs review</option><option value="unreachable">Unreachable</option></select><span class="icon" data-icon="chevron-down"></span></label>
+            <label class="toolbar-select"><span class="icon" data-icon="server"></span><select id="host-source-filter" aria-label="Host source"><option value="all">All sources</option><option value="olvm">OLVM</option><option value="manual">Manual</option></select><span class="icon" data-icon="chevron-down"></span></label>
+            <button class="primary-button" id="add-manual-host-button"><span class="icon" data-icon="plus"></span><span>Add manual host</span></button>
+          </section>
+          <section class="panel table-panel">
+            <div class="table-heading"><div><h2>Managed hosts</h2><p id="table-description">0 systems in view</p></div><button class="icon-button subtle" aria-label="Table settings" disabled title="Table settings are not configured"><span class="icon" data-icon="settings"></span></button></div>
+            <div class="table-scroll"><table><thead><tr><th>Host</th><th>Source</th><th>Status</th><th>Environment</th><th>Operating system</th><th>IP address</th><th>Last collection</th><th aria-label="Actions"></th></tr></thead><tbody id="host-table-body"></tbody></table></div>
+          </section>
+        </section>
+
+        <section class="view simple-view" id="managers-view">
+          <section class="manager-command-bar">
+            <div>
+              <h2>OLVM managers</h2>
+              <p><strong id="configured-manager-count">0</strong> configured sources for VM and hypervisor inventory</p>
+            </div>
+            <div class="manager-command-actions">
+              <button class="outline-button" id="add-manager-button"><span class="icon" data-icon="plus"></span>Add manager</button>
+              <button class="primary-button" id="sync-all-button" disabled><span class="icon" data-icon="refresh"></span><span>Sync all</span></button>
+            </div>
+          </section>
+          <section class="panel manager-panel">
+            <div class="table-heading">
+              <div><h2>Configured connections</h2><p>One inventory source per OLVM engine</p></div>
+              <button class="icon-button subtle" aria-label="Manager list options" disabled title="Manager list options are not configured"><span class="icon" data-icon="more"></span></button>
+            </div>
+            <div class="manager-list" id="manager-list"></div>
+          </section>
+        </section>
+
+        <section class="view simple-view" id="collections-view">
+          <div class="collection-tabs" role="tablist" aria-label="Collection workspace views">
+            <button class="collection-tab active" id="collection-runs-tab" type="button" role="tab" aria-selected="true" aria-controls="collection-runs-panel" data-collection-tab="runs">Runs</button>
+            <button class="collection-tab" id="collection-profiles-tab" type="button" role="tab" aria-selected="false" aria-controls="collection-profiles-panel" data-collection-tab="profiles">Collection profiles</button>
+            <button class="collection-tab" id="collection-playbooks-tab" type="button" role="tab" aria-selected="false" aria-controls="collection-playbooks-panel" data-collection-tab="playbooks">Playbooks</button>
+          </div>
+          <section class="collection-tab-panel" id="collection-runs-panel" role="tabpanel" aria-labelledby="collection-runs-tab">
+            <section class="panel full-panel">
+              <div class="panel-heading"><div><h2>Collection runs</h2><p>Read-only fact gathering across your inventory</p></div><button class="primary-button" id="collection-list-button" disabled><span class="icon" data-icon="refresh"></span>Run collection</button></div>
+              <div class="run-list" id="run-list"></div>
+            </section>
+          </section>
+          <section class="collection-tab-panel" id="collection-profiles-panel" role="tabpanel" aria-labelledby="collection-profiles-tab" hidden>
+            <section class="panel full-panel">
+              <div class="panel-heading"><div><h2>Collection profiles</h2><p>Versioned read-only playbooks for inventory facts</p></div><button class="primary-button" id="add-collection-profile-button"><span class="icon" data-icon="plus"></span>New profile</button></div>
+              <div class="collection-profile-list" id="collection-profile-list"></div>
+            </section>
+          </section>
+          <section class="collection-tab-panel" id="collection-playbooks-panel" role="tabpanel" aria-labelledby="collection-playbooks-tab" hidden>
+            <section class="panel full-panel playbook-repository-panel">
+              <div class="panel-heading"><div><h2>Playbook repository</h2><p>Reviewed revisions are pinned to collection profiles</p></div></div>
+              <div class="playbook-repository-summary" aria-label="Playbook repository status">
+                <span class="playbook-repository-icon"><span class="icon" data-icon="branch"></span></span>
+                <div class="playbook-repository-copy"><strong id="playbook-repository-name">No profile sources</strong><p id="playbook-repository-status">Loading profile source metadata</p></div>
+                <span class="repository-protection" id="playbook-repository-protection"><span class="icon" data-icon="lock"></span>No source</span>
+              </div>
+              <div class="playbook-repository-note" id="playbook-repository-note" role="note">Playbook revisions are resolved from Sentinel. Browser changes are never presented as persisted or reviewed.</div>
+              <div class="playbook-repository-list" id="playbook-repository-list"></div>
+            </section>
+          </section>
+        </section>
+
+        <section class="view simple-view" id="credentials-view">
+          <section class="panel full-panel">
+            <div class="panel-heading"><div><h2>Service credential references</h2><p>API and application references only. Manage SSH key references in Settings.</p></div><button class="primary-button" id="add-credential-button"><span class="icon" data-icon="plus"></span>Add reference</button></div>
+            <div class="secret-store-summary"><span class="credential-icon"><span class="icon" data-icon="key"></span></span><div><strong>OpenBao reference metadata</strong><p>Sentinel stores paths only. No OpenBao connection is configured in this test drive.</p></div><span class="integration-state"><span></span>Not connected</span></div>
+            <div class="credential-list" id="credential-list"></div>
+          </section>
+        </section>
+
+        <section class="view simple-view" id="alerts-view">
+          <section class="panel full-panel">
+            <div class="panel-heading"><div><h2>Open alerts</h2><p>Signals that need review from the latest collections</p></div><button class="outline-button" disabled title="Alert acknowledgement is not configured"><span class="icon" data-icon="check"></span>Mark all read</button></div>
+            <div class="alert-list alert-list-full" id="alerts-full-list" aria-live="polite"></div>
+          </section>
+        </section>
+
+        <section class="view simple-view" id="settings-view">
+          <section class="panel settings-panel">
+            <div class="panel-heading"><div><h2>Production architecture</h2><p>Inventory and collection entities persist locally in this development stack. External services and runtime settings remain planned for production.</p></div></div>
+            <div class="architecture-list">
+              <article class="architecture-row"><span class="architecture-icon database-icon"><span class="icon" data-icon="hard-drive"></span></span><div><strong>PostgreSQL</strong><p><code>sentinel_db</code> stores inventory, collection configuration, and reporting views. <code>grafana_db</code> stores Grafana configuration.</p></div><span class="architecture-role">System of record</span></article>
+              <article class="architecture-row"><span class="architecture-icon grafana-icon">G</span><div><strong>Grafana</strong><p>Builds dashboards from the read-only <code>sentinel_db.reporting</code> data source.</p></div><span class="architecture-role">Visualization</span></article>
+              <article class="architecture-row"><span class="architecture-icon bao-icon"><span class="icon" data-icon="key"></span></span><div><strong>OpenBao</strong><p>Holds OLVM, SSH, database, and Git secret material under <code>kv/sentinel</code>. Sentinel stores paths only.</p></div><span class="architecture-role">Secrets</span></article>
+              <article class="architecture-row"><span class="architecture-icon git-icon"><span class="icon" data-icon="package"></span></span><div><strong>Git playbook repository</strong><p><code>sentinel-playbooks</code> owns playbook source, roles, collections, and revision history.</p></div><span class="architecture-role">Automation source</span></article>
+            </div>
+          </section>
+          <section class="panel settings-panel runtime-settings-panel">
+            <div class="panel-heading"><div><h2>SSH key management</h2><p>SSH key references for manual hosts and collection profiles. Private keys remain in OpenBao.</p></div><button class="primary-button" id="add-ssh-key-button"><span class="icon" data-icon="plus"></span>Add SSH key</button></div>
+            <div class="ssh-key-list" id="ssh-key-list"></div>
+          </section>
+          <section class="panel settings-panel runtime-settings-panel">
+            <div class="panel-heading"><div><h2>Collection runtime</h2><p>No execution runtime or retention policy is configured in this test drive.</p></div></div>
+            <div class="empty-state">Configure the production Ansible runner, secret access, and retention policy before enabling live collection.</div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="host-dialog" id="host-dialog">
+      <article>
+        <header class="dialog-header"><div><p class="eyebrow">Host detail</p><h2 id="dialog-title">Host details</h2></div><button class="icon-button subtle" id="close-dialog" aria-label="Close host details"><span class="icon" data-icon="x"></span></button></header>
+        <div class="dialog-status" id="dialog-status"></div>
+        <div class="detail-grid" id="host-details"></div>
+        <div class="dialog-actions"><button class="outline-button" id="close-detail-button">Close</button><button class="outline-button manual-host-action" id="edit-manual-host-button" hidden><span class="icon" data-icon="edit"></span>Edit</button><button class="primary-button" id="collect-host-button"><span class="icon" data-icon="refresh"></span>Collect host</button></div>
+      </article>
+    </dialog>
+
+    <dialog class="manual-host-dialog" id="manual-host-dialog">
+      <form id="manual-host-form" novalidate>
+        <header class="dialog-header">
+          <div><p class="eyebrow" id="manual-host-dialog-eyebrow">Manual inventory</p><h2 id="manual-host-dialog-title">Add physical host</h2></div>
+          <button class="icon-button subtle" type="button" id="close-manual-host-dialog" aria-label="Close manual host form"><span class="icon" data-icon="x"></span></button>
+        </header>
+        <div class="manager-form-body">
+          <div class="form-grid">
+            <label class="form-field"><span>Host name</span><input id="manual-host-name-input" name="name" type="text" autocomplete="off" required /></label>
+            <label class="form-field"><span>Management address</span><input id="manual-host-address-input" name="address" type="text" autocomplete="off" required /></label>
+          </div>
+          <div class="form-section-label">SSH connection</div>
+          <div class="form-grid form-grid-three">
+            <label class="form-field"><span>SSH user</span><input id="manual-host-user-input" name="user" type="text" value="root" autocomplete="username" required /></label>
+            <label class="form-field"><span>SSH port</span><input id="manual-host-port-input" name="port" type="number" min="1" max="65535" value="22" required /></label>
+            <label class="form-field"><span>OpenBao SSH reference</span><select id="manual-host-credential-input" name="credential" required></select></label>
+          </div>
+          <div class="form-section-label">Classification</div>
+          <div class="form-grid form-grid-three">
+            <label class="form-field"><span>Role</span><input id="manual-host-role-input" name="role" type="text" autocomplete="off" required /></label>
+            <label class="form-field"><span>Environment</span><select id="manual-host-environment-input" name="environment"><option>Production</option><option>Staging</option><option>Operations</option></select></label>
+            <label class="form-field"><span>Lifecycle</span><select id="manual-host-lifecycle-input" name="lifecycle"><option value="active">Active</option><option value="disabled">Disabled</option><option value="decommissioned">Decommissioned</option></select></label>
+          </div>
+          <div class="connection-result" id="manual-host-connection-result" aria-live="polite"></div>
+        </div>
+        <footer class="dialog-actions manager-dialog-actions"><button class="outline-button" type="button" id="test-manual-host-button"><span class="icon" data-icon="activity"></span>Test connection</button><span class="dialog-actions-spacer"></span><button class="outline-button" type="button" id="cancel-manual-host-button">Cancel</button><button class="primary-button" type="submit"><span class="icon" data-icon="check"></span>Save host</button></footer>
+      </form>
+    </dialog>
+
+    <dialog class="manager-dialog" id="manager-dialog">
+      <form id="manager-form" novalidate>
+        <header class="dialog-header">
+          <div><p class="eyebrow" id="manager-dialog-eyebrow">New source</p><h2 id="manager-dialog-title">Add OLVM manager</h2></div>
+          <button class="icon-button subtle" type="button" id="close-manager-dialog" aria-label="Close manager form"><span class="icon" data-icon="x"></span></button>
+        </header>
+        <div class="manager-form-body">
+          <div class="form-grid">
+            <label class="form-field"><span>Manager name</span><input id="manager-name-input" name="name" type="text" autocomplete="off" required /></label>
+            <label class="form-field"><span>Engine address</span><input id="manager-address-input" name="address" type="text" autocomplete="off" required /></label>
+          </div>
+          <div class="form-section-label">OpenBao API reference</div>
+          <div class="form-grid">
+            <label class="form-field"><span>Username</span><input id="manager-username-input" name="username" type="text" autocomplete="username" required /></label>
+            <label class="form-field"><span>Secret reference</span><select id="manager-credential-input" name="credential" required></select></label>
+          </div>
+          <div class="ssl-setting"><div><strong>Use SSL / HTTPS</strong><p>Connect to the Engine API over HTTPS.</p></div><label class="switch"><input id="manager-ssl-input" type="checkbox" checked /><span></span></label></div>
+          <div class="connection-result" id="connection-result" aria-live="polite"></div>
+        </div>
+        <footer class="dialog-actions manager-dialog-actions"><button class="outline-button" type="button" id="test-manager-button"><span class="icon" data-icon="activity"></span>Test connection</button><span class="dialog-actions-spacer"></span><button class="outline-button" type="button" id="cancel-manager-button">Cancel</button><button class="primary-button" type="submit"><span class="icon" data-icon="check"></span>Save manager</button></footer>
+      </form>
+    </dialog>
+
+    <dialog class="collection-profile-dialog" id="collection-profile-dialog">
+      <form id="collection-profile-form" novalidate>
+        <header class="dialog-header">
+          <div><p class="eyebrow" id="collection-profile-dialog-eyebrow">Collection profile</p><h2 id="collection-profile-dialog-title">New collection profile</h2></div>
+          <button class="icon-button subtle" type="button" id="close-collection-profile-dialog" aria-label="Close collection profile form"><span class="icon" data-icon="x"></span></button>
+        </header>
+        <div class="manager-form-body">
+          <div class="form-grid">
+            <label class="form-field"><span>Profile name</span><input id="collection-profile-name-input" name="name" type="text" autocomplete="off" required /></label>
+            <label class="form-field"><span>Playbook path</span><input id="collection-profile-playbook-input" name="playbook" type="text" autocomplete="off" required /></label>
+          </div>
+          <div class="form-grid profile-form-grid">
+            <label class="form-field"><span>Git revision</span><input id="collection-profile-revision-input" name="revision" type="text" autocomplete="off" required /></label>
+            <label class="form-field scheduler-field"><span>Run schedule (UTC)</span><input id="collection-profile-schedule-input" name="schedule" type="text" autocomplete="off" spellcheck="false" aria-describedby="collection-profile-schedule-description collection-profile-schedule-help" /><small id="collection-profile-schedule-description" class="schedule-description" aria-live="polite">Manual only.</small><small id="collection-profile-schedule-help">Five fields: minute hour day-of-month month day-of-week</small></label>
+          </div>
+          <div class="form-section-label">Targeting</div>
+          <div class="form-grid">
+            <label class="form-field"><span>Inventory scope</span><input id="collection-profile-scope-input" name="scope" type="text" autocomplete="off" required /></label>
+            <label class="form-field"><span>Credential reference</span><select id="collection-profile-credential-input" name="credential" required></select></label>
+          </div>
+          <div class="form-section-label">Profile behavior</div>
+          <div class="form-grid">
+            <label class="form-field"><span>Description</span><input id="collection-profile-description-input" name="description" type="text" autocomplete="off" required /></label>
+            <label class="form-field"><span>State</span><select id="collection-profile-state-input" name="state"><option value="enabled">Enabled</option><option value="paused">Paused</option></select></label>
+          </div>
+          <div class="connection-result" id="collection-profile-form-result" aria-live="polite"></div>
+        </div>
+        <footer class="dialog-actions"><button class="outline-button" type="button" id="edit-profile-playbook-button" hidden><span class="icon" data-icon="edit"></span>Edit playbook</button><span class="dialog-actions-spacer"></span><button class="outline-button" type="button" id="cancel-collection-profile-button">Cancel</button><button class="primary-button" type="submit"><span class="icon" data-icon="check"></span>Save profile</button></footer>
+      </form>
+    </dialog>
+
+    <dialog class="playbook-editor-dialog" id="playbook-editor-dialog">
+      <article>
+        <header class="dialog-header">
+          <div><p class="eyebrow">Playbook change</p><h2 id="playbook-editor-title">Edit playbook</h2></div>
+          <button class="icon-button subtle" type="button" id="close-playbook-editor-dialog" aria-label="Close playbook editor"><span class="icon" data-icon="x"></span></button>
+        </header>
+        <div class="playbook-editor-body">
+          <dl class="playbook-git-context">
+            <div><dt>Repository</dt><dd><code id="playbook-editor-repository">Not loaded</code></dd></div>
+            <div><dt>Path</dt><dd><code id="playbook-editor-path">Not loaded</code></dd></div>
+            <div><dt>Revision</dt><dd><code id="playbook-editor-revision">Not loaded</code></dd></div>
+            <div><dt>Branch</dt><dd id="playbook-editor-branch">Not loaded</dd></div>
+          </dl>
+          <div class="playbook-editor-status" id="playbook-editor-status" aria-live="polite"></div>
+          <div class="playbook-editor-tabs" role="tablist" aria-label="Playbook editing views">
+            <button class="playbook-editor-tab active" type="button" id="playbook-edit-tab" role="tab" aria-selected="true" aria-controls="playbook-edit-panel" data-playbook-tab="edit">Editor</button>
+            <button class="playbook-editor-tab" type="button" id="playbook-versions-tab" role="tab" aria-selected="false" aria-controls="playbook-versions-panel" data-playbook-tab="versions">Versions</button>
+          </div>
+          <section class="playbook-editor-tab-panel" id="playbook-edit-panel" role="tabpanel" aria-labelledby="playbook-edit-tab">
+            <label class="playbook-field"><span>Playbook source</span><textarea id="playbook-editor-input" spellcheck="false" autocomplete="off"></textarea></label>
+          </section>
+          <section class="playbook-editor-tab-panel" id="playbook-versions-panel" role="tabpanel" aria-labelledby="playbook-versions-tab" hidden>
+            <div class="playbook-version-heading"><div><strong>Revision history</strong><p>Choose a revision to inspect, compare, or restore as a draft.</p></div><button class="icon-button subtle" type="button" id="compare-playbook-versions-button" aria-label="Compare selected revision with its parent" title="Compare selected revision"> <span class="icon" data-icon="compare"></span></button></div>
+            <div class="playbook-version-list" id="playbook-version-list"></div>
+            <section class="playbook-version-detail" id="playbook-version-detail" aria-live="polite"></section>
+          </section>
+          <div class="connection-result" id="playbook-editor-result" aria-live="polite"></div>
+        </div>
+        <footer class="dialog-actions"><button class="outline-button" type="button" id="check-playbook-syntax-button"><span class="icon" data-icon="check"></span>Check syntax</button><span class="dialog-actions-spacer"></span><button class="outline-button" type="button" id="cancel-playbook-editor-button">Cancel</button><button class="primary-button" type="button" id="save-playbook-button"><span class="icon" data-icon="branch"></span><span id="save-playbook-label">Create draft &amp; PR</span></button></footer>
+      </article>
+    </dialog>
+
+    <dialog class="credential-dialog" id="credential-dialog">
+      <form id="credential-form" novalidate>
+        <header class="dialog-header">
+          <div><p class="eyebrow" id="credential-dialog-eyebrow">OpenBao secret reference</p><h2 id="credential-dialog-title">Add reference</h2></div>
+          <button class="icon-button subtle" type="button" id="close-credential-dialog" aria-label="Close credential form"><span class="icon" data-icon="x"></span></button>
+        </header>
+        <div class="manager-form-body">
+          <div class="form-grid">
+            <label class="form-field"><span>Reference name</span><input id="credential-name-input" name="name" type="text" autocomplete="off" required /></label>
+            <label class="form-field"><span>OpenBao path</span><input id="credential-reference-input" name="reference" type="text" autocomplete="off" required /></label>
+          </div>
+          <div class="form-grid profile-form-grid">
+            <label class="form-field"><span>Credential type</span><select id="credential-type-input" name="type"></select></label>
+            <label class="form-field"><span>Principal</span><input id="credential-principal-input" name="principal" type="text" autocomplete="off" required /></label>
+          </div>
+          <div class="form-section-label">Access scope</div>
+          <div class="form-grid">
+            <label class="form-field"><span>Allowed scope</span><input id="credential-scope-input" name="scope" type="text" autocomplete="off" required /></label>
+            <label class="form-field"><span>State</span><select id="credential-state-input" name="state"><option value="active">Active</option><option value="disabled">Disabled</option></select></label>
+          </div>
+          <div class="connection-result" id="credential-form-result" aria-live="polite"></div>
+          <p class="form-note">This form records a path reference only. It never reads, displays, or stores the secret value.</p>
+        </div>
+        <footer class="dialog-actions"><button class="outline-button" type="button" id="cancel-credential-button">Cancel</button><button class="primary-button" type="submit"><span class="icon" data-icon="check"></span>Save credential</button></footer>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" aria-hidden="true" hidden><span class="icon" data-icon="check-circle" aria-hidden="true"></span><span id="toast-text"></span></div>
+    <script src="app.js"></script>
+  </body>
+</html>

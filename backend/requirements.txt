@@ -1,0 +1,6 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+psycopg[binary]==3.2.6
+pytest==8.3.5
+httpx==0.28.1
+ansible-core==2.18.8

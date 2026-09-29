@@ -1,0 +1,103 @@
+diff --git a/Dockerfile b/Dockerfile
+index a313833..0bbf03c 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -13,7 +13,7 @@ WORKDIR /app
+ COPY . /app
+ 
+ # The [mcp] extra pulls mcp + starlette + uvicorn, which the HTTP transport needs.
+-RUN pip install --no-cache-dir ".[mcp]"
++RUN pip install --no-cache-dir ".[mcp,openai]"
+ 
+ # Run as a non-root user — the server is network-exposed.
+ RUN useradd --create-home --uid 10001 graphify
+diff --git a/graphify/detect.py b/graphify/detect.py
+index cc5d53e..e3df90d 100644
+--- a/graphify/detect.py
++++ b/graphify/detect.py
+@@ -42,7 +42,7 @@ _MTIME_COARSE_S = 2.0
+ _MTIME_SUBSECOND_S = 0.05
+ 
+ CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
+-DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
++DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.adoc', '.html', '.yaml', '.yml'}
+ PAPER_EXTENSIONS = {'.pdf'}
+ IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
+ OFFICE_EXTENSIONS = {'.docx', '.xlsx'}
+diff --git a/graphify/llm.py b/graphify/llm.py
+index c4bde95..4f0be2a 100644
+--- a/graphify/llm.py
++++ b/graphify/llm.py
+@@ -968,6 +968,20 @@ def _openai_content(user_message: str, refs: list[_ImageRef]):
+     return [{"type": "text", "text": text}, *parts]
+ 
+ 
++def _responses_input(user_message: str, refs: list[_ImageRef]):
++    """Build OpenAI Responses API input from text and optional images."""
++    content = [{"type": "input_text", "text": _with_image_notes(user_message, refs)}]
++    content.extend(
++        {
++            "type": "input_image",
++            "image_url": f"data:{r.media_type};base64,{r.b64}",
++            "detail": "auto",
++        }
++        for r in refs if r.raw
++    )
++    return [{"role": "user", "content": content}]
++
++
+ def _bedrock_content(user_message: str, refs: list[_ImageRef]) -> list[dict]:
+     """Build the Bedrock Converse user content list (raw bytes, not base64)."""
+     content: list[dict] = [
+@@ -1388,6 +1402,30 @@ def _call_openai_compat(
+         _retries = 0
+     client = OpenAI(api_key=api_key, base_url=base_url, timeout=_resolve_api_timeout(),
+                     max_retries=_retries)
++    if backend == "openai":
++        response_kwargs: dict = {
++            "model": model,
++            "instructions": _extraction_system(deep=deep_mode),
++            "input": _responses_input(user_message, images or []),
++            "max_output_tokens": max_completion_tokens,
++        }
++        if reasoning_effort is not None:
++            response_kwargs["reasoning"] = {"effort": reasoning_effort}
++        if extra_body is not None:
++            response_kwargs.update(extra_body)
++        resp = client.responses.create(**response_kwargs)
++        raw_content = getattr(resp, "output_text", "") or ""
++        if not raw_content:
++            raise ValueError("LLM returned empty or filtered response")
++        result = _parse_llm_json(raw_content)
++        usage = getattr(resp, "usage", None)
++        result["input_tokens"] = getattr(usage, "input_tokens", 0) if usage else 0
++        result["output_tokens"] = getattr(usage, "output_tokens", 0) if usage else 0
++        result["model"] = model
++        incomplete = getattr(resp, "incomplete_details", None)
++        result["finish_reason"] = "length" if getattr(incomplete, "reason", "") == "max_output_tokens" else "stop"
++        _mark_hollow(result, raw_content, backend)
++        return result
+     kwargs: dict = {
+         "model": model,
+         "messages": [
+@@ -3030,6 +3068,20 @@ def _call_llm(
+     except ImportError as exc:
+         raise ImportError(_backend_pkg_hint("openai", "openai")) from exc
+     client = OpenAI(api_key=key, base_url=cfg["base_url"], timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries())
++    if backend == "openai":
++        response_kwargs: dict = {"model": mdl, "input": prompt, "max_output_tokens": max_tokens}
++        if cfg.get("reasoning_effort"):
++            response_kwargs["reasoning"] = {"effort": cfg["reasoning_effort"]}
++        if cfg.get("extra_body") is not None:
++            response_kwargs.update(cfg["extra_body"])
++        resp = client.responses.create(**response_kwargs)
++        text = getattr(resp, "output_text", "") or ""
++        if not text.strip():
++            raise ValueError("OpenAI-compatible returned empty or filtered response")
++        usage = getattr(resp, "usage", None)
++        if usage is not None:
++            _rec(getattr(usage, "input_tokens", 0), getattr(usage, "output_tokens", 0))
++        return text
+     kwargs: dict = {
+         "model": mdl,
+         "messages": [{"role": "user", "content": prompt}],

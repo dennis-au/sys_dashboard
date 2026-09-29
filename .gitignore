@@ -1,0 +1,10 @@
+# Development-only Graphify state and its downloaded research corpus.
+.graphify/
+graphify-out/
+knowledge/
+
+# Deployment-injected secret files must never be committed. The development
+# Compose stack uses a Docker-managed volume instead of these paths.
+secrets/
+forgejo/secrets/
+.env

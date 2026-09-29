@@ -1,0 +1,40 @@
+services:
+  graphify-build:
+    image: graphify-local:sys-dashboard-responses-v1
+    pull_policy: never
+    build:
+      context: ./.graphify/source
+    user: "${GRAPHIFY_UID}:${GRAPHIFY_GID}"
+    working_dir: /workspace
+    env_file:
+      - ${GRAPHIFY_PROVIDER_ENV}
+    environment:
+      OPENAI_API_KEY: ${GRAPHIFY_OPENAI_API_KEY}
+      OPENAI_BASE_URL: https://gsykj.com/v1
+      OPENAI_MODEL: gpt-5.6-terra
+      GRAPHIFY_API_TIMEOUT: "120"
+    volumes:
+      - ./:/workspace
+    entrypoint: ["python", "-m", "graphify"]
+    command: ["extract", "/workspace/knowledge/ovirt", "--out", "/workspace", "--backend", "openai", "--no-gitignore", "--token-budget", "6000", "--max-concurrency", "1"]
+
+  graphify-server:
+    image: graphify-local:sys-dashboard-responses-v1
+    pull_policy: never
+    user: "${GRAPHIFY_UID}:${GRAPHIFY_GID}"
+    working_dir: /workspace
+    volumes:
+      - ./graphify-out:/data:ro
+    ports:
+      - "127.0.0.1:${GRAPHIFY_PORT}:8080"
+    command:
+      - /data/graph.json
+      - --transport
+      - http
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --path
+      - /mcp
+      - --stateless

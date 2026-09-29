@@ -1,0 +1,72 @@
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:16.0.5-rootless
+    user: "1000:1000"
+    environment:
+      FORGEJO____APP_NAME: Sentinel Forgejo Integration Test
+      FORGEJO__server__DOMAIN: forgejo
+      FORGEJO__server__ROOT_URL: http://forgejo:3000/
+      FORGEJO__server__DISABLE_SSH: "true"
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__service__REQUIRE_SIGNIN_VIEW: "true"
+      FORGEJO__repository__DEFAULT_PRIVATE: "private"
+    volumes:
+      - forgejo-data:/var/lib/gitea
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/api/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+    networks:
+      - forgejo-integration
+
+  forgejo-credentials-init:
+    image: alpine:3.22
+    user: "0:0"
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /run/sentinel-forgejo-credentials
+        chown 1000:1000 /run/sentinel-forgejo-credentials
+        chmod 700 /run/sentinel-forgejo-credentials
+    volumes:
+      - forgejo-service-credentials:/run/sentinel-forgejo-credentials
+    networks:
+      - forgejo-integration
+
+  forgejo-bootstrap:
+    image: codeberg.org/forgejo/forgejo:16.0.5-rootless
+    user: "1000:1000"
+    entrypoint: ["/bin/sh", "/bootstrap/bootstrap.sh"]
+    volumes:
+      - forgejo-data:/var/lib/gitea
+      - forgejo-service-credentials:/run/sentinel-forgejo-credentials
+      - ./bootstrap.sh:/bootstrap/bootstrap.sh:ro
+    networks:
+      - forgejo-integration
+
+  forgejo-integration-test:
+    build:
+      context: ../../backend
+    command: ["pytest", "-q", "integration/forgejo_write_path.py"]
+    environment:
+      FORGEJO_URL: http://forgejo:3000
+      FORGEJO_REPOSITORY_OWNER: sentinel
+      FORGEJO_REPOSITORY_NAME: sentinel-playbooks
+      FORGEJO_API_TOKEN_FILE: /run/secrets/forgejo_api_token
+      FORGEJO_TIMEOUT_SECONDS: "10"
+    volumes:
+      - forgejo-service-credentials:/run/secrets:ro
+    networks:
+      - forgejo-integration
+
+volumes:
+  forgejo-data:
+  forgejo-service-credentials:
+
+networks:
+  forgejo-integration:
+    internal: true

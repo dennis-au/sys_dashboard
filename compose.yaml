@@ -1,0 +1,153 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sentinel_db}
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinel} -d ${POSTGRES_DB:-sentinel_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - sentinel-postgres-data:/var/lib/postgresql/data
+    networks:
+      - database
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-sentinel_db}
+      SENTINEL_INTERNAL_AUDIT_LOG_MODE: ${SENTINEL_INTERNAL_AUDIT_LOG_MODE:-false}
+      SENTINEL_INTERNAL_AUDIT_LOG_MAX_EVENTS: ${SENTINEL_INTERNAL_AUDIT_LOG_MAX_EVENTS:-10000}
+      # This is a path only. The bootstrap container writes the local development
+      # token to the named volume; a production deployment replaces it with an
+      # OpenBao-supplied secret at the same path.
+      FORGEJO_API_TOKEN_FILE: /run/secrets/forgejo_api_token
+    depends_on:
+      postgres:
+        condition: service_healthy
+      forgejo-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - application
+      - database
+      - playbooks
+    volumes:
+      - forgejo-service-credentials:/run/secrets:ro
+    restart: unless-stopped
+
+  # The worker is part of the same Sentinel modular monolith. It is the sole
+  # scheduler authority and currently queues target-free simulations only.
+  worker:
+    build:
+      context: ./backend
+    command: ["python", "-m", "sentinel.worker"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-sentinel_db}
+      SENTINEL_INTERNAL_AUDIT_LOG_MODE: ${SENTINEL_INTERNAL_AUDIT_LOG_MODE:-false}
+      SENTINEL_INTERNAL_AUDIT_LOG_MAX_EVENTS: ${SENTINEL_INTERNAL_AUDIT_LOG_MAX_EVENTS:-10000}
+      FORGEJO_API_TOKEN_FILE: /run/secrets/forgejo_api_token
+    depends_on:
+      postgres:
+        condition: service_healthy
+      forgejo-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - database
+      - playbooks
+    volumes:
+      - forgejo-service-credentials:/run/secrets:ro
+    restart: unless-stopped
+
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:16.0.5-rootless
+    user: "1000:1000"
+    environment:
+      FORGEJO____APP_NAME: Sentinel Playbooks
+      FORGEJO__server__DOMAIN: forgejo
+      FORGEJO__server__ROOT_URL: http://forgejo:3000/
+      FORGEJO__server__DISABLE_SSH: "true"
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__service__REQUIRE_SIGNIN_VIEW: "true"
+      FORGEJO__repository__DEFAULT_PRIVATE: "private"
+    volumes:
+      - forgejo-data:/var/lib/gitea
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/api/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - playbooks
+    restart: unless-stopped
+
+  forgejo-bootstrap:
+    image: codeberg.org/forgejo/forgejo:16.0.5-rootless
+    user: "1000:1000"
+    depends_on:
+      forgejo:
+        condition: service_healthy
+      forgejo-credentials-init:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "/bootstrap/bootstrap.sh"]
+    volumes:
+      - forgejo-data:/var/lib/gitea
+      - forgejo-service-credentials:/run/sentinel-forgejo-credentials
+      - ./forgejo/bootstrap.sh:/bootstrap/bootstrap.sh:ro
+    networks:
+      - playbooks
+    restart: "no"
+
+  # Docker creates named volumes as root-owned. This one-shot job prepares the
+  # local development credential volume for Forgejo's rootless UID without
+  # giving the application write access to the secret mount.
+  forgejo-credentials-init:
+    image: alpine:3.22
+    user: "0:0"
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /run/sentinel-forgejo-credentials
+        chown 1000:1000 /run/sentinel-forgejo-credentials
+        chmod 700 /run/sentinel-forgejo-credentials
+    volumes:
+      - forgejo-service-credentials:/run/sentinel-forgejo-credentials
+    restart: "no"
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_started
+    networks:
+      - application
+    volumes:
+      - ./index.html:/usr/share/nginx/html/index.html:ro
+      - ./styles.css:/usr/share/nginx/html/styles.css:ro
+      - ./app.js:/usr/share/nginx/html/app.js:ro
+    restart: unless-stopped
+
+volumes:
+  sentinel-postgres-data:
+  forgejo-data:
+  # Local development credential material generated during Forgejo bootstrap.
+  # It is not a source-controlled file and is mounted read-only by the API.
+  forgejo-service-credentials:
+
+networks:
+  application:
+  database:
+    internal: true
+  playbooks:
+    internal: true

@@ -1,0 +1,9 @@
+.git
+.DS_Store
+README.md
+.graphify
+graphify-out
+knowledge
+secrets
+forgejo/secrets
+.env
