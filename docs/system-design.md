@@ -348,7 +348,11 @@ development only.
 - Grafana is served through the authenticated Sentinel origin at `/grafana/`.
   The portal reads only Grafana health and dashboard catalog metadata through a
   Viewer service account stored in a Docker-managed runtime volume. Sentinel
-  never proxies Grafana's write API or persists dashboard definitions.
+  never proxies Grafana's dashboard write API or persists dashboard definitions.
+  The only Grafana mutation exposed by Sentinel is an administrator-password
+  rotation from Settings. It is sent directly to Grafana and stored only in a
+  private Docker runtime volume; it is excluded from PostgreSQL, audit events,
+  diagnostics exports, and browser state.
 - Forgejo hosts the private `sentinel-playbooks` repository inside the Compose
   stack. Its service token is available only through the internal secret mount.
 - Sentinel owns operational inventory, freshness, run-state, integration

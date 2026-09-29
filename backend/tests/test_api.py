@@ -124,6 +124,22 @@ def test_internal_audit_setting_is_persisted_and_validated(client: httpx.Client)
     assert disabled.json() == {"enabled": False}
 
 
+def test_grafana_password_reset_rejects_invalid_request_bodies(client: httpx.Client):
+    mismatch = client.post(
+        "/api/settings/grafana/admin-password/reset",
+        json={"newPassword": "replacement-admin-password", "confirmation": "does-not-match"},
+    )
+    assert mismatch.status_code == 422
+    assert mismatch.json()["detail"] == "Grafana administrator passwords do not match."
+
+    too_short = client.post(
+        "/api/settings/grafana/admin-password/reset",
+        json={"newPassword": "short", "confirmation": "short"},
+    )
+    assert too_short.status_code == 422
+    assert "between 16 and 256" in too_short.json()["detail"]
+
+
 def test_summary_reports_an_empty_operational_state(client: httpx.Client):
     response = client.get("/api/summary")
 

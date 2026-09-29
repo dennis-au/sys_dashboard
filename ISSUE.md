@@ -71,6 +71,10 @@ Validated on September 29, 2026:
   Grafana credential material.
 - The Grafana subpath proxy served the actual Grafana CSS and JavaScript assets
   and rendered the Grafana login form in a fresh browser session.
+- Grafana administrator password reset was validated through Sentinel Settings:
+  the API returned only the administrator name and status, Grafana accepted the
+  replacement, and the retained private-volume credential survived a forced
+  Grafana container recreation.
 
 No live OLVM Engine or external secret provider was contacted during this
 validation.

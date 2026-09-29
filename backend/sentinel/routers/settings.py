@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from ..audit import iter_ndjson_events, read_internal_audit_settings, set_internal_audit_enabled
 from ..config import INTERNAL_AUDIT_LOG_MAX_EVENTS
 from ..credentials import update_credential_references
+from ..grafana import GrafanaConfigurationError, GrafanaCredentialResetError, reset_administrator_password
 from ..records import store_record
 from ..ssh_keys import (
     SshKeyGenerationError,
@@ -19,6 +20,24 @@ from ..validation import current_record_or_404
 
 
 router = APIRouter(tags=["settings"])
+
+
+@router.post("/api/settings/grafana/admin-password/reset")
+def reset_grafana_administrator_password(payload: dict[str, Any]) -> dict[str, str]:
+    """Rotate the Grafana administrator password without persisting it in Sentinel."""
+
+    password = payload.get("newPassword")
+    confirmation = payload.get("confirmation")
+    if not isinstance(password, str) or not isinstance(confirmation, str):
+        raise HTTPException(status_code=422, detail="Provide and confirm a Grafana administrator password.")
+    if password != confirmation:
+        raise HTTPException(status_code=422, detail="Grafana administrator passwords do not match.")
+    if not 16 <= len(password) <= 256:
+        raise HTTPException(status_code=422, detail="Grafana administrator passwords must be between 16 and 256 characters.")
+    try:
+        return reset_administrator_password(password)
+    except (GrafanaConfigurationError, GrafanaCredentialResetError) as exc:
+        raise HTTPException(status_code=503, detail="Grafana administrator password could not be reset.") from exc
 
 
 @router.get("/api/settings/internal-audit")

@@ -66,6 +66,12 @@ Sentinel API uses that token only for Grafana health and dashboard-catalog
 reads. It cannot create, edit, or delete Grafana dashboards and never returns
 the token to the browser, PostgreSQL, logs, audit exports, or diagnostics.
 
+Settings can rotate the Grafana administrator password when Grafana is ready.
+The browser submits the replacement only to the reset endpoint; Sentinel sends
+it to Grafana, writes it only to the private `grafana-admin-credentials`
+volume, and returns the administrator name and update status only. It is not
+stored in PostgreSQL, browser state, logs, or diagnostics.
+
 Forgejo data, including its SQLite database and Git repositories, is stored in the Docker-managed `forgejo-data` volume. Embedded SSH is disabled. The API reads its narrowly scoped service token from the internal secret mount only when it checks Forgejo readiness or resolves Git-owned playbook metadata. `GET /api/integrations/forgejo/readiness` verifies Forgejo health and authenticated access to the prepared private repository; it never returns credential material.
 
 ### Playbook Migration

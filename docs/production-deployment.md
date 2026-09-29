@@ -35,7 +35,7 @@ application images, and starts the stack.
 
 The script stores deployment settings, the portal administrator username, the
 Caddy password hash, the database password file, and generated Grafana
-administrator/configuration passwords under
+database passwords under
 `.sentinel-production/`, which is ignored by image builds and must be included
 in the server backup policy. Do not commit that directory. Later runs reuse the
 stored settings and do not prompt for the administrator password unless
@@ -84,7 +84,11 @@ Sentinel API and stores its token in the Docker-managed
 dashboard catalog metadata with that token. Dashboard edits, users, and Grafana
 login remain Grafana responsibilities. Include `grafana-data` and
 `grafana-service-credentials` in the protected backup policy; never export the
-service-account token from the server.
+service-account token from the server. The Grafana administrator password is
+seeded into the Docker-managed `grafana-admin-credentials` volume during first
+deployment. Sentinel Settings can rotate it directly; the replacement is not
+stored in `deployment.env`, PostgreSQL, logs, diagnostics, or browser state.
+Include the private volume in the protected backup and recovery procedure.
 
 For unattended provisioning, provide the four first-run values in the command
 environment. Prefer an approved secret-injection mechanism over shell history:
@@ -132,13 +136,9 @@ docker compose --env-file .sentinel-production/deployment.env -f compose.product
 Caddy, and `.sentinel-production/` runtime data together and test restoration before
 depending on the deployment operationally.
 
-Changing the administrator password requires a deliberate redeploy:
-
-```sh
-SENTINEL_ADMIN_PASSWORD='replace-with-a-new-16-character-minimum-password' ./scripts/deploy-production
-```
-
-Avoid supplying this value through shell history or shared process listings;
-the script otherwise prompts without echoing the password. Each deployment
-recreates Caddy after the stack starts so an updated Basic Auth configuration is
-applied immediately while its certificate and configuration volumes persist.
+Rotate the Grafana administrator password from **Settings > Grafana
+administrator**. The control requires a matching 16-to-256-character
+replacement, updates Grafana immediately, and atomically replaces the value in
+its private Docker volume. Each deployment recreates Caddy after the stack
+starts so an updated Basic Auth configuration is applied immediately while its
+certificate and configuration volumes persist.

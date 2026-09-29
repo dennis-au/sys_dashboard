@@ -26,6 +26,7 @@ x-backend: &backend
     GRAFANA_URL: http://grafana:3000
     GRAFANA_PUBLIC_URL: /grafana
     GRAFANA_API_TOKEN_FILE: /run/grafana-service-credentials/grafana_api_token
+    GRAFANA_ADMIN_PASSWORD_FILE: /run/grafana-admin-credentials/admin_password
     HOME: /tmp
     XDG_CACHE_HOME: /tmp/.cache
   secrets:
@@ -74,6 +75,8 @@ services:
         condition: service_completed_successfully
       sentinel-managed-ssh-init:
         condition: service_completed_successfully
+      grafana-admin-credentials-init:
+        condition: service_completed_successfully
     networks:
       - application
       - database
@@ -84,6 +87,7 @@ services:
       - ${SENTINEL_RUNTIME_DIR:?Run scripts/deploy-production first}/secrets:/run/sentinel-secrets:ro
       - sentinel-managed-ssh:/var/lib/sentinel/managed-ssh
       - grafana-service-credentials:/run/grafana-service-credentials:ro
+      - grafana-admin-credentials:/run/grafana-admin-credentials
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2).read()"]
       interval: 10s
@@ -296,11 +300,37 @@ services:
     restart: "no"
     logging: *log-options
 
+  # Seed a private runtime credential once. Sentinel replaces this file only
+  # after a Settings-driven Grafana administrator password reset.
+  grafana-admin-credentials-init:
+    image: alpine:3.22
+    user: "0:0"
+    environment:
+      GRAFANA_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        credential_file=/run/grafana-admin-credentials/admin_password
+        chown 1000:1000 /run/grafana-admin-credentials
+        chmod 755 /run/grafana-admin-credentials
+        if [ ! -s "$$credential_file" ]; then
+          test -n "$$GRAFANA_ADMIN_PASSWORD"
+          umask 077
+          printf '%s' "$$GRAFANA_ADMIN_PASSWORD" > "$$credential_file"
+        fi
+        chown 1000:1000 "$$credential_file"
+        chmod 644 "$$credential_file"
+    volumes:
+      - grafana-admin-credentials:/run/grafana-admin-credentials
+    restart: "no"
+    logging: *log-options
+
   grafana:
     image: grafana/grafana:11.5.2
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in deployment.env}
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/grafana-admin-credentials/admin_password
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_DATABASE_TYPE: postgres
@@ -314,6 +344,8 @@ services:
     depends_on:
       grafana-db-init:
         condition: service_completed_successfully
+      grafana-admin-credentials-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/health >/dev/null"]
       interval: 10s
@@ -325,6 +357,7 @@ services:
       - database
     volumes:
       - grafana-data:/var/lib/grafana
+      - grafana-admin-credentials:/run/grafana-admin-credentials:ro
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     restart: unless-stopped
     logging: *log-options
@@ -353,15 +386,18 @@ services:
     environment:
       GRAFANA_URL: http://grafana:3000
       GRAFANA_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GRAFANA_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in deployment.env}
+      GRAFANA_ADMIN_PASSWORD_FILE: /run/grafana-admin-credentials/admin_password
       GRAFANA_API_TOKEN_FILE: /run/grafana-service-credentials/grafana_api_token
     depends_on:
       grafana:
         condition: service_healthy
       grafana-credentials-init:
         condition: service_completed_successfully
+      grafana-admin-credentials-init:
+        condition: service_completed_successfully
     volumes:
       - grafana-service-credentials:/run/grafana-service-credentials
+      - grafana-admin-credentials:/run/grafana-admin-credentials:ro
     networks:
       - application
     restart: "no"
@@ -379,6 +415,7 @@ volumes:
   sentinel-managed-ssh:
   grafana-data:
   grafana-service-credentials:
+  grafana-admin-credentials:
   caddy-data:
   caddy-config:
 

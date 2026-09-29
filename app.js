@@ -197,6 +197,7 @@ function renderAll() {
   renderPlaybookRepository();
   renderManagers();
   renderGrafanaDashboards();
+  renderGrafanaAdministratorSettings();
   renderInternalAuditSettings();
 }
 
@@ -252,6 +253,77 @@ async function updateInternalAuditSettings(event) {
     internalAuditSettings = { enabled: previous, loaded: true };
     renderInternalAuditSettings();
     showRequestError(error);
+  }
+}
+
+function renderGrafanaAdministratorSettings() {
+  const button = document.querySelector("#reset-grafana-password-button");
+  const username = document.querySelector("#grafana-admin-username");
+  const status = document.querySelector("#grafana-admin-status");
+  if (!button || !username || !status) return;
+  const ready = grafanaIntegration.state === "ready";
+  username.textContent = "Grafana administrator";
+  status.textContent = ready
+    ? `Connected to Grafana ${grafanaIntegration.version || ""}`.trim()
+    : "Grafana must be connected before its administrator password can be reset.";
+  button.disabled = !ready;
+}
+
+function setGrafanaPasswordResult(type = "", message = "") {
+  const result = document.querySelector("#grafana-password-result");
+  result.className = "connection-result";
+  if (!message) {
+    result.textContent = "";
+    return;
+  }
+  result.classList.add(type);
+  const stateIcon = type === "success" ? "check-circle" : type === "error" ? "alert" : "activity";
+  result.innerHTML = `${icon(stateIcon)}<span>${escapeHtml(message)}</span>`;
+}
+
+function resetGrafanaPasswordForm() {
+  document.querySelector("#grafana-password-form").reset();
+  setGrafanaPasswordResult();
+}
+
+function openGrafanaPasswordDialog() {
+  if (grafanaIntegration.state !== "ready") return;
+  resetGrafanaPasswordForm();
+  document.querySelector("#grafana-password-dialog").showModal();
+  document.querySelector("#grafana-password-input").focus();
+}
+
+function closeGrafanaPasswordDialog() {
+  document.querySelector("#grafana-password-dialog").close();
+  resetGrafanaPasswordForm();
+}
+
+async function resetGrafanaPassword(event) {
+  event.preventDefault();
+  const form = document.querySelector("#grafana-password-form");
+  if (!form.reportValidity()) return;
+  const password = document.querySelector("#grafana-password-input").value;
+  const confirmation = document.querySelector("#grafana-password-confirmation-input").value;
+  if (password !== confirmation) {
+    setGrafanaPasswordResult("error", "Passwords do not match.");
+    return;
+  }
+  const submit = form.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  submit.innerHTML = `${icon("activity")}<span>Resetting</span>`;
+  setGrafanaPasswordResult("testing", "Updating Grafana administrator password...");
+  try {
+    const result = await api("/settings/grafana/admin-password/reset", {
+      method: "POST",
+      body: JSON.stringify({ newPassword: password, confirmation })
+    });
+    closeGrafanaPasswordDialog();
+    showToast(`Grafana password updated for ${result.username}.`);
+  } catch (error) {
+    setGrafanaPasswordResult("error", error.message);
+  } finally {
+    submit.disabled = false;
+    submit.innerHTML = `${icon("key")}<span>Reset password</span>`;
   }
 }
 
@@ -1727,8 +1799,10 @@ document.addEventListener("click", (event) => {
   if (credentialEdit) { openCredentialDialog(credentialEdit.dataset.credentialEdit); return; }
   if (event.target.closest("#add-credential-button")) { openCredentialDialog(); return; }
   if (event.target.closest("#add-ssh-key-button")) { openCredentialDialog("", "SSH key"); return; }
+  if (event.target.closest("#reset-grafana-password-button")) { openGrafanaPasswordDialog(); return; }
   if (event.target.closest("#export-internal-audit-button")) { exportInternalAuditEvents(); return; }
   if (event.target.closest("#close-credential-dialog") || event.target.closest("#cancel-credential-button")) { closeCredentialDialog(); return; }
+  if (event.target.closest("#close-grafana-password-dialog") || event.target.closest("#cancel-grafana-password-button")) { closeGrafanaPasswordDialog(); return; }
   if (event.target.closest("#add-manual-host-button")) { openManualHostDialog(); return; }
   if (event.target.closest("#edit-manual-host-button")) {
     const hostName = event.target.closest("#edit-manual-host-button").dataset.manualHost;
@@ -1760,6 +1834,7 @@ document.querySelector("#manual-host-form").addEventListener("submit", saveManua
 document.querySelector("#collection-profile-form").addEventListener("submit", saveCollectionProfile);
 document.querySelector("#collection-profile-schedule-input").addEventListener("input", () => updateCronSchedulePreview());
 document.querySelector("#credential-form").addEventListener("submit", saveCredential);
+document.querySelector("#grafana-password-form").addEventListener("submit", resetGrafanaPassword);
 document.querySelector("#internal-audit-toggle").addEventListener("change", updateInternalAuditSettings);
 document.querySelector("#host-search").addEventListener("input", renderHosts);
 document.querySelector("#host-status-filter").addEventListener("change", (event) => {

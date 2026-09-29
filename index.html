@@ -262,6 +262,13 @@
             <div class="ssh-key-list" id="ssh-key-list"></div>
           </section>
           <section class="panel settings-panel runtime-settings-panel">
+            <div class="panel-heading"><div><h2>Grafana administrator</h2><p>Reset the login password for the configured Grafana administrator.</p></div></div>
+            <div class="settings-row">
+              <div><strong id="grafana-admin-username">Grafana administrator</strong><p id="grafana-admin-status">Checking Grafana connection</p></div>
+              <div class="settings-row-actions"><button class="outline-button compact-button" id="reset-grafana-password-button" type="button" disabled><span class="icon" data-icon="key"></span><span>Reset password</span></button></div>
+            </div>
+          </section>
+          <section class="panel settings-panel runtime-settings-panel">
             <div class="panel-heading"><div><h2>Internal diagnostics</h2><p>Controlled error capture for production test-drive diagnosis.</p></div></div>
             <div class="settings-row">
               <div><strong>Audit error capture</strong><p id="internal-audit-status">Loading diagnostic setting</p></div>
@@ -427,6 +434,23 @@
           <p class="form-note">This form records a path reference only. It never reads, displays, or stores the secret value.</p>
         </div>
         <footer class="dialog-actions"><button class="outline-button" type="button" id="cancel-credential-button">Cancel</button><button class="primary-button" type="submit"><span class="icon" data-icon="check"></span><span id="credential-submit-label">Save credential</span></button></footer>
+      </form>
+    </dialog>
+
+    <dialog class="host-dialog" id="grafana-password-dialog">
+      <form id="grafana-password-form" novalidate>
+        <header class="dialog-header">
+          <div><p class="eyebrow">Grafana administrator</p><h2>Reset password</h2></div>
+          <button class="icon-button subtle" type="button" id="close-grafana-password-dialog" aria-label="Close Grafana password reset"><span class="icon" data-icon="x"></span></button>
+        </header>
+        <div class="manager-form-body">
+          <div class="form-grid">
+            <label class="form-field"><span>New password</span><input id="grafana-password-input" name="newPassword" type="password" autocomplete="new-password" minlength="16" maxlength="256" required /></label>
+            <label class="form-field"><span>Confirm password</span><input id="grafana-password-confirmation-input" name="confirmation" type="password" autocomplete="new-password" minlength="16" maxlength="256" required /></label>
+          </div>
+          <div class="connection-result" id="grafana-password-result" aria-live="polite"></div>
+        </div>
+        <footer class="dialog-actions"><button class="outline-button" type="button" id="cancel-grafana-password-button">Cancel</button><button class="primary-button" type="submit"><span class="icon" data-icon="key"></span>Reset password</button></footer>
       </form>
     </dialog>
 
