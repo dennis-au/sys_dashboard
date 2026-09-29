@@ -10,7 +10,7 @@ from .credentials import migrate_legacy_secret_references
 from .inventory import migrate_olvm_provenance, olvm_provenance_schema_statements
 from .ingestion import apply_ingestion_migration, apply_linux_system_fact_migration
 from .records import database_connection
-from .reporting import reporting_schema_statements
+from .reporting import reconcile_terminal_live_run_activity, reporting_schema_statements
 from .scheduling import migrate_profile_schedules, scheduler_schema_statements
 
 
@@ -43,6 +43,7 @@ def initialize_database() -> None:
     migrate_legacy_secret_references()
     migrate_olvm_provenance()
     migrate_profile_schedules()
+    reconcile_terminal_live_run_activity()
     try:
         migrate_database_profiles(DATABASE_URL)
     except PlaybookMigrationError as exc:

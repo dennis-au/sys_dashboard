@@ -17,6 +17,9 @@ manager and collection actions:
   restricted fact subset, writes a checksum-verified artifact, and ingests
   filesystem and capacity facts. It records success, partial, unreachable,
   failed, and skipped target outcomes explicitly.
+- Terminal live-run details and the Collections activity surface reconcile on
+  completion. Startup also repairs earlier terminal live runs that were left
+  as `Running` by the pre-fix worker build.
 - The summary reports `operational`, `degraded`, or `unavailable` from live
   run state. Historical simulation rows remain readable but cannot make the
   portal look operational.
@@ -50,17 +53,24 @@ manager and collection actions:
 
 Validated on September 29, 2026:
 
-- Isolated full backend suite on macOS and `192.168.0.111`: `89 passed`; one
-  Starlette deprecation warning. `scripts/test-isolated` created and removed
-  temporary containers and volumes, leaving collected data intact.
-- `docker compose config --quiet` and production Compose configuration check
-  on `192.168.0.111`.
+- Isolated full backend suite on macOS and `192.168.0.111`: `96 passed`; one
+  Starlette deprecation warning. `scripts/test-isolated` also validates the
+  production Compose file with file-mounted PostgreSQL credentials and removes
+  its temporary Docker resources and configuration files.
+- A disposable production deployment completed successfully with HTTPS Basic
+  Auth. Its API, Forgejo, Grafana, worker, and dashboard all became healthy;
+  password rotation rejected the previous password and accepted the replacement.
+  The disposable containers, volumes, networks, and runtime files were removed.
 - `bash -n scripts/deploy-production`.
 - Strict SSH host-key verification and Ansible connectivity from Sentinel on
   `192.168.0.111` to the non-production Linux target `192.168.0.110`.
 - Facts-only pinned playbook collection run
   `run-6063fa01612448c8b2b7e5ed922ed172`, using reviewed commit
   `cca48ae32d55ac249b8a0e3b6a61a825a546d657`, completed successfully.
+- The live-run activity consistency regression was fixed and verified with
+  collection `run-9d21e4f959ac4e8baffd8a15b1e73afa`: both the detailed state
+  and Collections activity state completed successfully. Startup reconciled
+  the 18 earlier terminal records left as `Running`; zero mismatches remain.
 - PostgreSQL reporting views contain the target's Red Hat family, CentOS 9,
   kernel, architecture, CPU, and memory facts.
 - Grafana `Sentinel Linux facts` dashboard and its reporting-only datasource

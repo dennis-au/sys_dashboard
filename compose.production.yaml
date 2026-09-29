@@ -266,15 +266,18 @@ services:
       PGPORT: "5432"
       PGDATABASE: ${POSTGRES_DB:-sentinel_db}
       PGUSER: ${POSTGRES_USER:-sentinel}
-      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      GRAFANA_CONFIG_DB_PASSWORD: ${GRAFANA_CONFIG_DB_PASSWORD:-${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}}
-      GRAFANA_REPORTING_DB_PASSWORD: ${GRAFANA_REPORTING_DB_PASSWORD:-${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}}
+      GRAFANA_CONFIG_DB_PASSWORD: ${GRAFANA_CONFIG_DB_PASSWORD:?Set GRAFANA_CONFIG_DB_PASSWORD in deployment.env}
+      GRAFANA_REPORTING_DB_PASSWORD: ${GRAFANA_REPORTING_DB_PASSWORD:?Set GRAFANA_REPORTING_DB_PASSWORD in deployment.env}
+    secrets:
+      - postgres_password
     depends_on:
       api:
         condition: service_started
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
+        export PGPASSWORD="$$(cat /run/secrets/postgres_password)"
+        test -n "$$PGPASSWORD"
         until psql -Atqc "SELECT to_regclass('reporting.collection_runs') IS NOT NULL" | grep -qx t; do sleep 2; done
         if psql -d postgres -Atqc "SELECT 1 FROM pg_roles WHERE rolname = 'grafana_config'" | grep -qx 1; then
           psql -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE grafana_config LOGIN PASSWORD '$$GRAFANA_CONFIG_DB_PASSWORD';"

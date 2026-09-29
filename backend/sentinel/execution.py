@@ -557,6 +557,7 @@ def execute_profile_collection(
                     "message": "Sentinel rejected the collected artifact.",
                 }
             record_host_outcomes(run_id, outcomes)
+            complete_live_collection(run_id, final_state)
             _update_profile_run_status(profile, final_state, outcomes)
             return {"run": run, "state": final_state, "outcomes": outcomes, "message": "Live collection completed."}
     except CollectionExecutionError as exc:

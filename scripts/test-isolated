@@ -6,11 +6,28 @@
 set -euo pipefail
 
 project="sentinel-test-$(date +%s)-$$"
+production_runtime=""
 
 cleanup() {
   docker compose --project-name "$project" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  if [[ -n "$production_runtime" ]]; then
+    if [[ -f "$production_runtime/Caddyfile" ]]; then unlink "$production_runtime/Caddyfile"; fi
+    if [[ -f "$production_runtime/deployment.env" ]]; then unlink "$production_runtime/deployment.env"; fi
+    if [[ -f "$production_runtime/postgres_password" ]]; then unlink "$production_runtime/postgres_password"; fi
+    rmdir "$production_runtime" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
 docker compose --project-name "$project" up --detach --build api
 docker compose --project-name "$project" exec -T api pytest -q tests
+
+production_runtime="$(mktemp -d /tmp/sentinel-production-config.XXXXXX)"
+printf '%s\n' 'test-postgres-password' > "$production_runtime/postgres_password"
+printf '%s\n' "SENTINEL_RUNTIME_DIR=$production_runtime" 'SENTINEL_DOMAIN=localhost' 'SENTINEL_ACME_EMAIL=ops@example.test' 'SENTINEL_ADMIN_USERNAME=operator' 'POSTGRES_DB=sentinel_db' 'POSTGRES_USER=sentinel' 'SENTINEL_IMAGE_TAG=production' 'GRAFANA_CONFIG_DB_PASSWORD=config-test-password' 'GRAFANA_REPORTING_DB_PASSWORD=reporting-test-password' > "$production_runtime/deployment.env"
+printf '%s\n' '{' '  admin off' '}' '' 'localhost {' '  reverse_proxy dashboard:8080' '}' > "$production_runtime/Caddyfile"
+if grep -Fq '${POSTGRES_PASSWORD' compose.production.yaml; then
+  printf '%s\n' 'Production Compose must use the PostgreSQL file secret, not POSTGRES_PASSWORD.' >&2
+  exit 1
+fi
+docker compose --env-file "$production_runtime/deployment.env" -f compose.production.yaml config --quiet

@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -231,3 +232,46 @@ def test_startup_replaces_legacy_reporting_views_before_adding_new_columns():
             "failure_reason",
             "display_summary",
         ]
+
+
+def test_startup_reconciles_terminal_live_runs_left_running_in_legacy_activity():
+    run_id = "reporting-legacy-activity-reconciliation-regression"
+    with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as connection, connection.cursor() as cursor:
+        try:
+            cursor.execute("DELETE FROM sentinel.collection_run_details WHERE run_id = %s", (run_id,))
+            cursor.execute("DELETE FROM sentinel.collection_runs WHERE id = %s", (run_id,))
+            cursor.execute(
+                "INSERT INTO sentinel.collection_runs (id, payload) VALUES (%s, %s)",
+                (
+                    run_id,
+                    Jsonb(
+                        {
+                            "id": run_id,
+                            "name": "reporting legacy reconciliation regression",
+                            "date": "Just now",
+                            "summary": "Manual profile run queued for worker execution",
+                            "status": "Running",
+                            "type": "success",
+                        }
+                    ),
+                ),
+            )
+            cursor.execute(
+                """
+                INSERT INTO sentinel.collection_run_details (
+                    run_id, name, source_type, execution_mode, state, requested_at, completed_at
+                ) VALUES (%s, %s, 'profile', 'live', 'partial', NOW() - INTERVAL '1 minute', NOW())
+                """,
+                (run_id, "reporting legacy reconciliation regression"),
+            )
+
+            initialize_database()
+
+            cursor.execute("SELECT payload FROM sentinel.collection_runs WHERE id = %s", (run_id,))
+            payload = cursor.fetchone()[0]
+            assert payload["status"] == "Partial"
+            assert payload["summary"] == "Live collection completed with target issues."
+            assert payload["type"] == "warn"
+        finally:
+            cursor.execute("DELETE FROM sentinel.collection_run_details WHERE run_id = %s", (run_id,))
+            cursor.execute("DELETE FROM sentinel.collection_runs WHERE id = %s", (run_id,))

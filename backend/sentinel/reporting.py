@@ -536,6 +536,55 @@ def complete_live_collection(run_id: str, state: str, *, failure_reason: str | N
     _update_legacy_run(run_id, labels[state], safe_reason)
 
 
+def reconcile_terminal_live_run_activity() -> None:
+    """Repair legacy activity rows left running by an earlier live worker build."""
+
+    with database_connection() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            WITH terminal_runs AS (
+                SELECT
+                    details.run_id,
+                    CASE details.state
+                        WHEN 'completed' THEN 'Completed'
+                        WHEN 'partial' THEN 'Partial'
+                        WHEN 'unreachable' THEN 'Unreachable'
+                        WHEN 'failed' THEN 'Failed'
+                    END AS status,
+                    CASE
+                        WHEN details.failure_reason IS NOT NULL AND BTRIM(details.failure_reason) <> ''
+                            THEN details.failure_reason
+                        WHEN details.state = 'completed' THEN 'Live collection completed.'
+                        ELSE 'Live collection completed with target issues.'
+                    END AS summary,
+                    CASE WHEN details.state = 'completed' THEN 'success' ELSE 'warn' END AS type,
+                    TO_CHAR(
+                        COALESCE(details.completed_at, details.requested_at) AT TIME ZONE 'UTC',
+                        'YYYY-MM-DD"T"HH24:MI:SS"Z"'
+                    ) AS completed_at
+                FROM sentinel.collection_run_details AS details
+                WHERE details.execution_mode = 'live'
+                  AND details.state IN ('completed', 'partial', 'unreachable', 'failed')
+            )
+            UPDATE sentinel.collection_runs AS legacy
+            SET payload = jsonb_set(
+                    jsonb_set(
+                        jsonb_set(
+                            jsonb_set(legacy.payload, '{status}', to_jsonb(terminal_runs.status), true),
+                            '{summary}', to_jsonb(terminal_runs.summary), true
+                        ),
+                        '{type}', to_jsonb(terminal_runs.type), true
+                    ),
+                    '{date}', to_jsonb(terminal_runs.completed_at), true
+                ),
+                updated_at = NOW()
+            FROM terminal_runs
+            WHERE legacy.id = terminal_runs.run_id
+              AND legacy.payload->>'status' IN ('Queued', 'Running')
+            """
+        )
+
+
 def _update_legacy_run(run_id: str, status: str, failure_reason: str | None = None) -> None:
     """Keep the existing Collections activity surface aligned with live run state."""
 

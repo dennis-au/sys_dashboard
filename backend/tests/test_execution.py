@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,7 @@ from sentinel.execution import (
     _ssh_host_key_arguments,
     validate_read_only_playbook,
 )
+from sentinel import execution
 from sentinel.facts import validate_fact_record
 
 
@@ -145,3 +147,52 @@ def test_linux_fact_normalization_emits_canonical_filesystem_and_capacity_record
     assert records[2]["payload"]["memoryUsedBytes"] == 60 * 1024 * 1024
     assert records[2]["payload"]["diskUsedBytes"] == 400
     assert validate_fact_record(records[2], expected_run_id="run-one").record_type == "linux.capacity_snapshot.v1"
+
+
+def test_successful_live_collection_finalizes_legacy_activity_before_updating_profile(monkeypatch):
+    """A completed collection must not leave the Collections activity row running."""
+
+    profile = {
+        "id": "profile-linux-facts",
+        "source": {"path": "inventory/linux-facts.yml", "commitSha": SHA},
+    }
+    run = {"id": "run-live-success", "expectedSourceInstances": [{"type": "linux", "id": "linux-one"}]}
+    host = {"name": "linux-one", "lifecycle": "active"}
+    events = []
+
+    monkeypatch.setattr(execution, "mark_collection_running", lambda run_id: events.append(("running", run_id)))
+    monkeypatch.setattr(execution, "require_runnable_source", lambda item: item["source"])
+    monkeypatch.setattr(execution, "read_profile_playbook", lambda item, client: {"content": "---\n- hosts: all\n  gather_facts: true\n  tasks: []\n"})
+    monkeypatch.setattr(execution, "get_record", lambda kind, record_id: host if kind == "hosts" and record_id == "linux-one" else None)
+    monkeypatch.setattr(execution, "_build_inventory", lambda workspace, hosts, item: ({"all": {"hosts": {"linux-one": {}}}}, []))
+    monkeypatch.setattr(
+        execution,
+        "_read_callback_events",
+        lambda path, host_ids: {"linux-one": {"state": "success", "facts": {"hostname": "linux-one"}}},
+    )
+    monkeypatch.setattr(execution, "_linux_fact_records", lambda *args, **kwargs: [{"recordType": "linux.system_fact.v1"}])
+    monkeypatch.setattr(
+        execution,
+        "prepare_sanitized_artifact",
+        lambda **kwargs: SimpleNamespace(manifest={"artifact": {"location": "facts.ndjson.gz"}}, ndjson=b""),
+    )
+    monkeypatch.setattr(execution, "write_sanitized_artifact", lambda *args: None)
+    monkeypatch.setattr(execution, "ingest_ndjson_artifact", lambda *args: SimpleNamespace(state="accepted"))
+    monkeypatch.setattr(execution, "record_host_outcomes", lambda run_id, outcomes: events.append(("outcomes", run_id, outcomes)))
+    monkeypatch.setattr(
+        execution,
+        "complete_live_collection",
+        lambda run_id, state, *, failure_reason=None: events.append(("complete", run_id, state, failure_reason)),
+    )
+    monkeypatch.setattr(execution, "_update_profile_run_status", lambda item, state, outcomes: events.append(("profile", state)))
+
+    result = execution.execute_profile_collection(
+        profile,
+        run,
+        object(),
+        runner=lambda command, **kwargs: SimpleNamespace(returncode=0),
+    )
+
+    assert result["state"] == "completed"
+    assert [event[0] for event in events] == ["running", "outcomes", "complete", "profile"]
+    assert events[2] == ("complete", "run-live-success", "completed", None)
