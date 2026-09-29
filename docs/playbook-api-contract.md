@@ -1,7 +1,7 @@
 # Playbook API Contract
 
 Sentinel exposes profile playbooks through the private Forgejo repository. No
-endpoint returns or stores a service token, OpenBao secret material, or
+endpoint returns or stores a service token, external secret material, or
 playbook source in PostgreSQL.
 
 ## Source States
@@ -49,4 +49,4 @@ request containing `source` is rejected. Sentinel fetches the selected pinned
 commit and invokes `ansible-playbook --syntax-check` in a temporary workspace
 with an empty inventory. The response has `valid`, sanitized `diagnostics`,
 `commitSha`, and `mode: "ansible-playbook-syntax-check"`; no target host,
-OLVM, SSH, OpenBao, or Grafana service is contacted.
+OLVM, SSH, external secret provider, or Grafana service is contacted.

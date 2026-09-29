@@ -1,10 +1,19 @@
 import os
+import sys
 import uuid
+from pathlib import Path
 
 import httpx
 import psycopg
 import pytest
 from psycopg.types.json import Jsonb
+
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from sentinel.credentials import migrate_legacy_secret_references
 
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000")
@@ -51,7 +60,7 @@ def client():
 
 
 def create_ssh_key(client: httpx.Client, suffix: str) -> tuple[str, str]:
-    reference = f"kv/sentinel/inventory/regression-{suffix}"
+    reference = f"secret://sentinel/inventory/regression-{suffix}"
     response = client.post(
         "/api/settings/ssh-keys",
         json={
@@ -94,6 +103,25 @@ def test_health_and_bootstrap_starts_empty(client: httpx.Client):
     }
     assert client.post("/api/collections/run").status_code == 409
     assert client.post("/api/managers/sync-all").status_code == 409
+
+
+def test_internal_audit_setting_is_persisted_and_validated(client: httpx.Client):
+    initial = client.get("/api/settings/internal-audit")
+    assert initial.status_code == 200
+    assert initial.json() == {"enabled": False}
+
+    invalid = client.put("/api/settings/internal-audit", json={"enabled": "true"})
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"] == "Internal audit enabled must be a boolean."
+
+    enabled = client.put("/api/settings/internal-audit", json={"enabled": True})
+    assert enabled.status_code == 200
+    assert enabled.json() == {"enabled": True}
+    assert client.get("/api/settings/internal-audit").json() == {"enabled": True}
+
+    disabled = client.put("/api/settings/internal-audit", json={"enabled": False})
+    assert disabled.status_code == 200
+    assert disabled.json() == {"enabled": False}
 
 
 def test_summary_reports_an_empty_operational_state(client: httpx.Client):
@@ -208,7 +236,7 @@ def test_reference_cascade_profiles_and_simulated_actions(client: httpx.Client):
             (blocked_profile_id, Jsonb(blocked_profile)),
         )
 
-    new_reference = f"kv/sentinel/inventory/regression-updated-{suffix}"
+    new_reference = f"secret://sentinel/inventory/regression-updated-{suffix}"
     updated_credential = client.put(
         f"/api/settings/ssh-keys/{credential_id}", json={**credential, "reference": new_reference}
     )
@@ -250,7 +278,7 @@ def test_ssh_key_references_are_managed_only_from_settings(client: httpx.Client)
     suffix = uuid.uuid4().hex[:8]
     payload = {
         "name": f"regression-ssh-{suffix}",
-        "reference": f"kv/sentinel/inventory/ssh-{suffix}",
+        "reference": f"secret://sentinel/inventory/ssh-{suffix}",
         "type": "SSH key",
         "principal": "ansible",
         "scope": "Regression targets",
@@ -264,3 +292,34 @@ def test_ssh_key_references_are_managed_only_from_settings(client: httpx.Client)
     created = client.post("/api/settings/ssh-keys", json=payload)
     assert created.status_code == 201
     assert created.json()["type"] == "SSH key"
+
+
+def test_legacy_secret_references_are_migrated_to_provider_neutral_uris():
+    suffix = uuid.uuid4().hex[:8]
+    credential_id = f"regression-legacy-reference-{suffix}"
+    legacy_reference = f"kv/sentinel/inventory/legacy-{suffix}"
+    with psycopg.connect(DATABASE_URL, autocommit=True) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO sentinel.credentials (id, payload) VALUES (%s, %s)",
+            (
+                credential_id,
+                Jsonb(
+                    {
+                        "id": credential_id,
+                        "name": f"Regression legacy reference {suffix}",
+                        "reference": legacy_reference,
+                        "type": "SSH key",
+                        "principal": "ansible",
+                        "scope": "Regression targets",
+                        "lastUsed": "Not used",
+                        "state": "active",
+                    }
+                ),
+            ),
+        )
+
+    migrate_legacy_secret_references()
+
+    with psycopg.connect(DATABASE_URL) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT payload->>'reference' FROM sentinel.credentials WHERE id = %s", (credential_id,))
+        assert cursor.fetchone()[0] == f"secret://sentinel/inventory/legacy-{suffix}"

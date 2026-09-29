@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+runtime_dir="${SENTINEL_RUNTIME_DIR:-$project_root/.sentinel-production}"
+environment_file="$runtime_dir/deployment.env"
+caddyfile="$runtime_dir/Caddyfile"
+password_file="$runtime_dir/postgres_password"
+caddy_image="caddy:2.8.4-alpine"
+
+fail() {
+  printf '%s\n' "Error: $*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "Required command is unavailable: $1"
+}
+
+validate_domain() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$ ]] || fail "SENTINEL_DOMAIN must be a DNS name without a scheme or path."
+  [[ "$1" != *".."* ]] || fail "SENTINEL_DOMAIN must not contain an empty label."
+}
+
+validate_username() {
+  [[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || fail "SENTINEL_ADMIN_USERNAME must contain only letters, numbers, dot, underscore, or hyphen."
+}
+
+load_existing_configuration() {
+  if [[ -f "$environment_file" ]]; then
+    # The file is created by this script with validated values only.
+    set -a
+    # shellcheck disable=SC1090
+    source "$environment_file"
+    set +a
+  fi
+}
+
+prompt_if_missing() {
+  local variable_name="$1"
+  local label="$2"
+  if [[ -z "${!variable_name:-}" ]]; then
+    read -r -p "$label: " "$variable_name"
+  fi
+}
+
+write_environment_file() {
+  umask 077
+  cat > "$environment_file" <<EOF
+SENTINEL_RUNTIME_DIR=$runtime_dir
+SENTINEL_DOMAIN=$SENTINEL_DOMAIN
+SENTINEL_ACME_EMAIL=$SENTINEL_ACME_EMAIL
+SENTINEL_ADMIN_USERNAME=${SENTINEL_ADMIN_USERNAME:-}
+POSTGRES_DB=${POSTGRES_DB:-sentinel_db}
+POSTGRES_USER=${POSTGRES_USER:-sentinel}
+SENTINEL_IMAGE_TAG=${SENTINEL_IMAGE_TAG:-production}
+EOF
+}
+
+write_caddyfile() {
+  local password_hash
+  if [[ -z "${SENTINEL_ADMIN_USERNAME:-}" ]]; then
+    read -r -p "Initial Sentinel admin username: " SENTINEL_ADMIN_USERNAME
+  fi
+  validate_username "$SENTINEL_ADMIN_USERNAME"
+  if [[ -z "${SENTINEL_ADMIN_PASSWORD:-}" ]]; then
+    read -r -s -p "Initial Sentinel admin password: " SENTINEL_ADMIN_PASSWORD
+    printf '\n'
+  fi
+  [[ ${#SENTINEL_ADMIN_PASSWORD} -ge 16 ]] || fail "The initial admin password must contain at least 16 characters."
+  password_hash="$(printf '%s\n' "$SENTINEL_ADMIN_PASSWORD" | docker run --rm -i --entrypoint sh "$caddy_image" -c 'IFS= read -r password; caddy hash-password --plaintext "$password"')"
+  unset SENTINEL_ADMIN_PASSWORD
+
+  umask 077
+  cat > "$caddyfile" <<EOF
+{
+  email $SENTINEL_ACME_EMAIL
+  admin off
+}
+
+$SENTINEL_DOMAIN {
+  encode zstd gzip
+
+  basic_auth {
+    $SENTINEL_ADMIN_USERNAME $password_hash
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "no-referrer"
+    -Server
+  }
+
+  reverse_proxy dashboard:8080
+}
+EOF
+}
+
+main() {
+  require_command docker
+  require_command openssl
+  docker info >/dev/null 2>&1 || fail "The current user cannot access the Docker daemon."
+  docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required."
+
+  mkdir -p "$runtime_dir"
+  chmod 700 "$runtime_dir"
+  load_existing_configuration
+
+  prompt_if_missing SENTINEL_DOMAIN "Public Sentinel DNS name"
+  prompt_if_missing SENTINEL_ACME_EMAIL "ACME notification email"
+  validate_domain "$SENTINEL_DOMAIN"
+  [[ "$SENTINEL_ACME_EMAIL" == *"@"* ]] || fail "SENTINEL_ACME_EMAIL must be an email address."
+
+  if [[ ! -s "$password_file" ]]; then
+    umask 077
+    openssl rand -hex 32 > "$password_file"
+  fi
+  chmod 600 "$password_file"
+
+  if [[ ! -s "$caddyfile" || -n "${SENTINEL_ADMIN_PASSWORD:-}" ]]; then
+    write_caddyfile
+  fi
+  chmod 600 "$caddyfile"
+  write_environment_file
+
+  cd "$project_root"
+  docker compose --env-file "$environment_file" -f compose.production.yaml build --pull
+  docker compose --env-file "$environment_file" -f compose.production.yaml up -d --remove-orphans
+  docker compose --env-file "$environment_file" -f compose.production.yaml up -d --force-recreate --no-deps caddy
+  docker compose --env-file "$environment_file" -f compose.production.yaml ps
+
+  printf '\nSentinel deployment started. Caddy will obtain a certificate after DNS points %s to this server and ports 80 and 443 are reachable.\n' "$SENTINEL_DOMAIN"
+}
+
+main "$@"

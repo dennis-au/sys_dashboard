@@ -1,24 +1,36 @@
 import os
+from collections.abc import Mapping
+from pathlib import Path
+from urllib.parse import quote
 
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+def configured_database_url(environment: Mapping[str, str] | None = None) -> str:
+    """Resolve either an explicit URL or a password-file-backed PostgreSQL URL."""
 
+    values = os.environ if environment is None else environment
+    explicit_url = values.get("DATABASE_URL", "").strip()
+    if explicit_url:
+        return explicit_url
 
-def internal_audit_log_enabled() -> bool:
-    return os.environ.get("SENTINEL_INTERNAL_AUDIT_LOG_MODE", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
-def internal_audit_log_max_events() -> int:
+    password_file = values.get("DATABASE_PASSWORD_FILE", "").strip()
+    if not password_file:
+        return ""
     try:
-        value = int(os.environ.get("SENTINEL_INTERNAL_AUDIT_LOG_MAX_EVENTS", "10000"))
-    except ValueError:
-        return 10000
-    return min(max(value, 100), 100000)
+        password = Path(password_file).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError("DATABASE_PASSWORD_FILE could not be read.") from exc
+    if not password:
+        raise RuntimeError("DATABASE_PASSWORD_FILE must contain a password.")
+
+    host = values.get("DATABASE_HOST", "postgres").strip() or "postgres"
+    port = values.get("DATABASE_PORT", "5432").strip() or "5432"
+    database = values.get("DATABASE_NAME", "sentinel_db").strip() or "sentinel_db"
+    user = values.get("DATABASE_USER", "sentinel").strip() or "sentinel"
+    return f"postgresql://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}/{quote(database, safe='')}"
+
+
+DATABASE_URL = configured_database_url()
+INTERNAL_AUDIT_LOG_MAX_EVENTS = 10_000
 
 TABLES = {
     "hosts": ("sentinel.hosts", "name"),

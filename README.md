@@ -8,7 +8,20 @@ Sentinel is an infrastructure inventory dashboard. The local Docker Desktop stac
 - Forgejo, available only to Sentinel's internal API and scheduler worker at
   `http://forgejo:3000`, for the self-hosted `sentinel-playbooks` repository
 
-The browser UI loads and persists hosts, OLVM managers, OpenBao reference metadata, collection profiles, run history, and Grafana catalog entries through the API. Sentinel uses internal Forgejo only for Git-owned playbook source and target-free syntax checks. It does not contact OLVM, SSH, OpenBao, Grafana, or other production infrastructure: connection tests and collection actions are explicit simulations.
+The browser UI loads and persists hosts, OLVM managers, external secret-reference metadata, collection profiles, run history, and Grafana catalog entries through the API. Sentinel uses internal Forgejo only for Git-owned playbook source and target-free syntax checks. It does not contact OLVM, SSH, an external secret provider, Grafana, or other production infrastructure: connection tests and collection actions are explicit simulations.
+
+## Production Deployment
+
+Deploy Sentinel on one Linux server with Docker Compose by running:
+
+```sh
+./scripts/deploy-production
+```
+
+The command creates the local deployment runtime, builds the production images,
+and starts the complete application behind HTTPS and Basic Auth. Read the
+[production deployment guide](docs/production-deployment.md) for prerequisites,
+backup expectations, password rotation, and operational commands.
 
 ## OLVM Provenance
 
@@ -20,7 +33,7 @@ Missing authoritative runs do not remove a host. The internal reconciliation mod
 
 ## Playbook Repository
 
-Forgejo is the internal self-hosted Git service for playbook source. It has no host HTTP or SSH port mapping and shares an internal Docker network only with the Sentinel API; neither the dashboard nor the host can reach `http://forgejo:3000`.
+Forgejo is the internal self-hosted Git service for playbook source. It has no host HTTP or SSH port mapping and shares an internal Docker network only with the Sentinel API and worker; neither the dashboard nor the host can reach `http://forgejo:3000`.
 
 On a fresh `forgejo-data` volume, `forgejo-bootstrap` locks Forgejo installation, creates the internal non-admin `sentinel` repository owner, and creates the private `sentinel-playbooks` repository with a `main` branch. No browser-based installation or administrator setup is required. The bootstrap uses a runtime-only random password and does not write it to Compose, logs, or the repository.
 
@@ -56,19 +69,19 @@ Open `http://localhost:8080`.
 
 The HTML, CSS, and JavaScript are bind-mounted into the dashboard container. Refresh the browser after editing any of those files. Rebuild the stack after changing backend code, dependencies, Dockerfiles, Nginx, or Compose configuration.
 
-A new PostgreSQL volume starts empty: no hosts, managers, credential references, profiles, dashboards, alerts, runs, or generated playbooks are inserted. Start by recording an OpenBao reference, then add an OLVM manager or a manual host. Actions remain clearly labelled simulations and do not contact target infrastructure.
+A new PostgreSQL volume starts empty: no hosts, managers, credential references, profiles, dashboards, alerts, runs, or generated playbooks are inserted. Start by recording an external secret reference, then add an OLVM manager or a manual host. Actions remain clearly labelled simulations and do not contact target infrastructure.
 
 ## Internal Audit Mode
 
-For a controlled production test drive, set `SENTINEL_INTERNAL_AUDIT_LOG_MODE=true` in the deployment `.env` before starting the stack. Sentinel then stores API and scheduler errors in `sentinel.internal_audit_events`. Each record is structured, fingerprinted, and deduplicated with an occurrence count; HTTP request bodies and headers are never stored, and secret-like values in exception text or context are redacted.
+For a controlled production test drive, enable **Internal diagnostics** from the Sentinel Settings workspace. The setting applies immediately to the API and scheduler and persists in PostgreSQL; it does not require a Compose or environment change. Sentinel then stores API and scheduler errors in `sentinel.internal_audit_events`. Each record is structured, fingerprinted, and deduplicated with an occurrence count; HTTP request bodies and headers are never stored, and secret-like values in exception text or context are redacted.
 
-Export the newest events from the API container as machine-readable NDJSON:
+Use **Export NDJSON** in Settings to download the retained redacted diagnostics. The command-line exporter remains available for a server-side collection path:
 
 ```sh
 docker compose exec -T api python -m sentinel.audit_export --limit 1000 > sentinel-audit.ndjson
 ```
 
-The stream is intentionally not exposed by an HTTP endpoint. Keep the exported file within the approved incident-handling path and share only the redacted export needed for diagnosis. The table retains at most `SENTINEL_INTERNAL_AUDIT_LOG_MAX_EVENTS` distinct error fingerprints, defaulting to `10000`.
+The browser export is a download only; the portal never renders audit event content. Keep the exported file within the approved incident-handling path and share only the redacted export needed for diagnosis. The table retains at most 10,000 distinct error fingerprints.
 
 ## Regression tests
 
@@ -78,7 +91,7 @@ Run the API regression suite against the Docker services:
 docker compose exec -T api pytest -q
 ```
 
-The suite covers empty bootstrap behavior, manual-host validation and persistence, OpenBao-reference cascades, Git-pinned profile metadata, source-resolution failures, byte-preserving migration staging and finalization, OLVM provenance and reconciliation collision rules, artifact ingestion replay and rollback, scheduler ownership, playbook syntax checks, and simulated manager/profile actions. Browser regression should additionally verify a create/edit action survives a reload and that the browser console is clean.
+The suite covers empty bootstrap behavior, manual-host validation and persistence, external-secret-reference cascades, Git-pinned profile metadata, source-resolution failures, byte-preserving migration staging and finalization, OLVM provenance and reconciliation collision rules, artifact ingestion replay and rollback, scheduler ownership, playbook syntax checks, and simulated manager/profile actions. Browser regression should additionally verify a create/edit action survives a reload and that the browser console is clean.
 
 The Forgejo client unit suite uses a mocked Forgejo transport and runs with the standard command. The readiness endpoint has been verified against the local prepared private repository, including a denied anonymous repository read.
 

@@ -235,7 +235,7 @@
         <section class="view simple-view" id="credentials-view">
           <section class="panel full-panel">
             <div class="panel-heading"><div><h2>Service credential references</h2><p>API and application references only. Manage SSH key references in Settings.</p></div><button class="primary-button" id="add-credential-button"><span class="icon" data-icon="plus"></span>Add reference</button></div>
-            <div class="secret-store-summary"><span class="credential-icon"><span class="icon" data-icon="key"></span></span><div><strong>OpenBao reference metadata</strong><p>Sentinel stores paths only. No OpenBao connection is configured in this test drive.</p></div><span class="integration-state"><span></span>Not connected</span></div>
+            <div class="secret-store-summary"><span class="credential-icon"><span class="icon" data-icon="key"></span></span><div><strong>External secret reference metadata</strong><p>Sentinel stores opaque references only. No secret-provider connection is configured in this test drive.</p></div><span class="integration-state"><span></span>Not connected</span></div>
             <div class="credential-list" id="credential-list"></div>
           </section>
         </section>
@@ -249,17 +249,27 @@
 
         <section class="view simple-view" id="settings-view">
           <section class="panel settings-panel">
-            <div class="panel-heading"><div><h2>Production architecture</h2><p>Inventory and collection entities persist locally in this development stack. External services and runtime settings remain planned for production.</p></div></div>
+            <div class="panel-heading"><div><h2>Production architecture</h2><p>Inventory and collection entities persist locally in this development stack. External services remain planned for production.</p></div></div>
             <div class="architecture-list">
               <article class="architecture-row"><span class="architecture-icon database-icon"><span class="icon" data-icon="hard-drive"></span></span><div><strong>PostgreSQL</strong><p><code>sentinel_db</code> stores inventory, collection configuration, and reporting views. <code>grafana_db</code> stores Grafana configuration.</p></div><span class="architecture-role">System of record</span></article>
               <article class="architecture-row"><span class="architecture-icon grafana-icon">G</span><div><strong>Grafana</strong><p>Builds dashboards from the read-only <code>sentinel_db.reporting</code> data source.</p></div><span class="architecture-role">Visualization</span></article>
-              <article class="architecture-row"><span class="architecture-icon bao-icon"><span class="icon" data-icon="key"></span></span><div><strong>OpenBao</strong><p>Holds OLVM, SSH, database, and Git secret material under <code>kv/sentinel</code>. Sentinel stores paths only.</p></div><span class="architecture-role">Secrets</span></article>
+              <article class="architecture-row"><span class="architecture-icon secret-icon"><span class="icon" data-icon="key"></span></span><div><strong>External secret delivery</strong><p>Provides OLVM, SSH, database, and Git secret material at runtime. Sentinel stores opaque <code>secret://sentinel/...</code> references only.</p></div><span class="architecture-role">Secrets</span></article>
               <article class="architecture-row"><span class="architecture-icon git-icon"><span class="icon" data-icon="package"></span></span><div><strong>Git playbook repository</strong><p><code>sentinel-playbooks</code> owns playbook source, roles, collections, and revision history.</p></div><span class="architecture-role">Automation source</span></article>
             </div>
           </section>
           <section class="panel settings-panel runtime-settings-panel">
-            <div class="panel-heading"><div><h2>SSH key management</h2><p>SSH key references for manual hosts and collection profiles. Private keys remain in OpenBao.</p></div><button class="primary-button" id="add-ssh-key-button"><span class="icon" data-icon="plus"></span>Add SSH key</button></div>
+            <div class="panel-heading"><div><h2>SSH key management</h2><p>SSH key references for manual hosts and collection profiles. Private keys remain outside Sentinel.</p></div><button class="primary-button" id="add-ssh-key-button"><span class="icon" data-icon="plus"></span>Add SSH key</button></div>
             <div class="ssh-key-list" id="ssh-key-list"></div>
+          </section>
+          <section class="panel settings-panel runtime-settings-panel">
+            <div class="panel-heading"><div><h2>Internal diagnostics</h2><p>Controlled error capture for production test-drive diagnosis.</p></div></div>
+            <div class="settings-row">
+              <div><strong>Audit error capture</strong><p id="internal-audit-status">Loading diagnostic setting</p></div>
+              <div class="settings-row-actions">
+                <button class="outline-button compact-button" id="export-internal-audit-button" type="button" title="Download redacted diagnostic events as NDJSON" disabled><span class="icon" data-icon="download"></span><span>Export NDJSON</span></button>
+                <label class="switch" title="Enable internal audit error capture"><input id="internal-audit-toggle" type="checkbox" role="switch" aria-label="Enable internal audit error capture" disabled /><span></span></label>
+              </div>
+            </div>
           </section>
           <section class="panel settings-panel runtime-settings-panel">
             <div class="panel-heading"><div><h2>Collection runtime</h2><p>No execution runtime or retention policy is configured in this test drive.</p></div></div>
@@ -293,7 +303,7 @@
           <div class="form-grid form-grid-three">
             <label class="form-field"><span>SSH user</span><input id="manual-host-user-input" name="user" type="text" value="root" autocomplete="username" required /></label>
             <label class="form-field"><span>SSH port</span><input id="manual-host-port-input" name="port" type="number" min="1" max="65535" value="22" required /></label>
-            <label class="form-field"><span>OpenBao SSH reference</span><select id="manual-host-credential-input" name="credential" required></select></label>
+            <label class="form-field"><span>SSH secret reference</span><select id="manual-host-credential-input" name="credential" required></select></label>
           </div>
           <div class="form-section-label">Classification</div>
           <div class="form-grid form-grid-three">
@@ -318,7 +328,7 @@
             <label class="form-field"><span>Manager name</span><input id="manager-name-input" name="name" type="text" autocomplete="off" required /></label>
             <label class="form-field"><span>Engine address</span><input id="manager-address-input" name="address" type="text" autocomplete="off" required /></label>
           </div>
-          <div class="form-section-label">OpenBao API reference</div>
+          <div class="form-section-label">API secret reference</div>
           <div class="form-grid">
             <label class="form-field"><span>Username</span><input id="manager-username-input" name="username" type="text" autocomplete="username" required /></label>
             <label class="form-field"><span>Secret reference</span><select id="manager-credential-input" name="credential" required></select></label>
@@ -396,13 +406,13 @@
     <dialog class="credential-dialog" id="credential-dialog">
       <form id="credential-form" novalidate>
         <header class="dialog-header">
-          <div><p class="eyebrow" id="credential-dialog-eyebrow">OpenBao secret reference</p><h2 id="credential-dialog-title">Add reference</h2></div>
+          <div><p class="eyebrow" id="credential-dialog-eyebrow">External secret reference</p><h2 id="credential-dialog-title">Add reference</h2></div>
           <button class="icon-button subtle" type="button" id="close-credential-dialog" aria-label="Close credential form"><span class="icon" data-icon="x"></span></button>
         </header>
         <div class="manager-form-body">
           <div class="form-grid">
             <label class="form-field"><span>Reference name</span><input id="credential-name-input" name="name" type="text" autocomplete="off" required /></label>
-            <label class="form-field"><span>OpenBao path</span><input id="credential-reference-input" name="reference" type="text" autocomplete="off" required /></label>
+            <label class="form-field"><span>Secret reference</span><input id="credential-reference-input" name="reference" type="text" autocomplete="off" placeholder="secret://sentinel/..." required /></label>
           </div>
           <div class="form-grid profile-form-grid">
             <label class="form-field"><span>Credential type</span><select id="credential-type-input" name="type"></select></label>

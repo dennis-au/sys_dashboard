@@ -56,7 +56,7 @@ def configured_olvm_manager():
         build_credential(
             {
                 "name": f"Regression OLVM credential {suffix}",
-                "reference": f"kv/sentinel/inventory/regression-olvm-{suffix}",
+                "reference": f"secret://sentinel/inventory/regression-olvm-{suffix}",
                 "type": "OLVM API credential",
                 "principal": "admin@internal",
                 "scope": "Regression OLVM manager",

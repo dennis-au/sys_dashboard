@@ -10,6 +10,8 @@ let grafanaDashboards = [];
 
 let managers = [];
 
+let internalAuditSettings = { enabled: false, loaded: false };
+
 const statusName = { healthy: "Healthy", review: "Needs review", unreachable: "Unreachable" };
 const lifecycleName = { active: "Active", disabled: "Disabled", decommissioned: "Decommissioned" };
 const managerStateName = { ready: "Ready", connected: "Connected", testing: "Testing", syncing: "Syncing" };
@@ -192,11 +194,62 @@ function renderAll() {
   renderPlaybookRepository();
   renderManagers();
   renderGrafanaDashboards();
+  renderInternalAuditSettings();
 }
 
 async function loadBackendState() {
-  applyBackendState(await api("/bootstrap"));
+  const [backendState, auditSettings] = await Promise.all([
+    api("/bootstrap"),
+    api("/settings/internal-audit")
+  ]);
+  applyBackendState(backendState);
+  internalAuditSettings = { enabled: auditSettings.enabled === true, loaded: true };
   renderAll();
+}
+
+function renderInternalAuditSettings() {
+  const toggle = document.querySelector("#internal-audit-toggle");
+  const exportButton = document.querySelector("#export-internal-audit-button");
+  const status = document.querySelector("#internal-audit-status");
+  if (!toggle || !exportButton || !status) return;
+  toggle.checked = internalAuditSettings.enabled;
+  toggle.disabled = !internalAuditSettings.loaded;
+  exportButton.disabled = !internalAuditSettings.loaded;
+  status.textContent = internalAuditSettings.loaded
+    ? (internalAuditSettings.enabled
+      ? "Capturing redacted API and scheduler errors for local NDJSON export."
+      : "Disabled. No diagnostic error events are being retained.")
+    : "Loading diagnostic setting";
+}
+
+function exportInternalAuditEvents() {
+  if (!internalAuditSettings.loaded) return;
+  const link = document.createElement("a");
+  link.href = "/api/settings/internal-audit/export";
+  link.download = "";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  showToast("Diagnostic export started.");
+}
+
+async function updateInternalAuditSettings(event) {
+  const previous = internalAuditSettings.enabled;
+  const enabled = event.target.checked;
+  event.target.disabled = true;
+  try {
+    const settings = await api("/settings/internal-audit", {
+      method: "PUT",
+      body: JSON.stringify({ enabled })
+    });
+    internalAuditSettings = { enabled: settings.enabled === true, loaded: true };
+    renderInternalAuditSettings();
+    showToast(internalAuditSettings.enabled ? "Internal audit capture enabled." : "Internal audit capture disabled.");
+  } catch (error) {
+    internalAuditSettings = { enabled: previous, loaded: true };
+    renderInternalAuditSettings();
+    showRequestError(error);
+  }
 }
 
 function summaryUnavailableMessage() {
@@ -1206,7 +1259,7 @@ function renderManagers() {
     return `
       <article class="manager-row">
         <span class="manager-source-icon">${icon("network")}</span>
-        <div class="manager-identity"><strong>${name}</strong><span>${address}</span><small>${escapeHtml(manager.credential || "OpenBao reference not set")}</small></div>
+        <div class="manager-identity"><strong>${name}</strong><span>${address}</span><small>${escapeHtml(manager.credential || "Secret reference not set")}</small></div>
         <div class="manager-meta"><label>Connection</label><strong>${manager.ssl ? "HTTPS" : "HTTP"}</strong><span>${username}</span></div>
         <div class="manager-collection"><label>Last inventory</label><strong>${escapeHtml(manager.lastSync)}</strong><span>${escapeHtml(manager.inventory)}</span></div>
         <span class="manager-state ${manager.state}">${state}</span>
@@ -1216,7 +1269,7 @@ function renderManagers() {
           <button class="icon-button subtle manager-edit-button" data-manager-edit="${manager.id}" aria-label="Edit ${name}">${icon("edit")}</button>
         </div>
       </article>`;
-  }).join("") || '<div class="empty-state">No OLVM managers are configured. Add a manager after creating its OpenBao credential reference.</div>';
+  }).join("") || '<div class="empty-state">No OLVM managers are configured. Add a manager after creating its secret reference.</div>';
   updateActionAvailability();
 }
 
@@ -1227,7 +1280,7 @@ function openHost(name) {
   document.querySelector("#dialog-title").textContent = host.name;
   document.querySelector("#dialog-status").innerHTML = `<span class="status-badge ${host.status}">${statusName[host.status]}</span>`;
   const fields = [["Source", isManual ? "Manual" : `OLVM · ${hostSourceName(host)}`], ["Role", host.role], ["Environment", host.environment], ["Operating system", host.os], ["Network addresses", renderIpList(host), "detail-item-wide"], ["Uptime", host.uptime], ["Disk utilization", host.disk], ["Memory utilization", host.memory], ["Last collection", host.collected]];
-  if (isManual) fields.splice(5, 0, ["Lifecycle", lifecycleName[host.lifecycle || "active"]], ["SSH connection", `${host.connectionUser || "root"} · port ${host.connectionPort || "22"}`], ["OpenBao reference", host.credential || "Not set"]);
+  if (isManual) fields.splice(5, 0, ["Lifecycle", lifecycleName[host.lifecycle || "active"]], ["SSH connection", `${host.connectionUser || "root"} · port ${host.connectionPort || "22"}`], ["Secret reference", host.credential || "Not set"]);
   else if (host.provenanceState === "legacy-unresolved") fields.splice(1, 0, ["Provenance", host.provenanceIssue || "Manager and Engine resource identity are not recorded."]);
   else fields.splice(1, 0, ["Manager identity", host.sourceManagerId || "Unavailable"], ["Engine resource", `${host.engineResourceType || "Unknown"} · ${host.engineResourceId || "Unavailable"}`], ["Reconciliation", `${host.reconciliationState || "Unavailable"} · authoritative run ${host.lastAuthoritativeRunId || "Unavailable"}`]);
   document.querySelector("#host-details").innerHTML = fields.map(([label, value, className = ""]) => `<div class="detail-item ${className}"><label>${label}</label><strong>${value}</strong></div>`).join("");
@@ -1561,6 +1614,7 @@ document.addEventListener("click", (event) => {
   if (credentialEdit) { openCredentialDialog(credentialEdit.dataset.credentialEdit); return; }
   if (event.target.closest("#add-credential-button")) { openCredentialDialog(); return; }
   if (event.target.closest("#add-ssh-key-button")) { openCredentialDialog("", "SSH key"); return; }
+  if (event.target.closest("#export-internal-audit-button")) { exportInternalAuditEvents(); return; }
   if (event.target.closest("#close-credential-dialog") || event.target.closest("#cancel-credential-button")) { closeCredentialDialog(); return; }
   if (event.target.closest("#add-manual-host-button")) { openManualHostDialog(); return; }
   if (event.target.closest("#edit-manual-host-button")) {
@@ -1593,6 +1647,7 @@ document.querySelector("#manual-host-form").addEventListener("submit", saveManua
 document.querySelector("#collection-profile-form").addEventListener("submit", saveCollectionProfile);
 document.querySelector("#collection-profile-schedule-input").addEventListener("input", () => updateCronSchedulePreview());
 document.querySelector("#credential-form").addEventListener("submit", saveCredential);
+document.querySelector("#internal-audit-toggle").addEventListener("change", updateInternalAuditSettings);
 document.querySelector("#host-search").addEventListener("input", renderHosts);
 document.querySelector("#host-status-filter").addEventListener("change", (event) => {
   activeFilter = event.target.value;

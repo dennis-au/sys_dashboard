@@ -446,7 +446,7 @@ def run_ansible_syntax_check(
     """Run target-free Ansible syntax validation without returning command output.
 
     ``--syntax-check`` parses a temporary file only.  The generated inventory
-    contains no hosts, so no SSH/OLVM/OpenBao connection data can be used.
+    contains no hosts, so no SSH, OLVM, or secret-provider connection data can be used.
     """
     with tempfile.TemporaryDirectory(prefix="sentinel-syntax-") as workspace:
         path = Path(workspace) / "playbook.yml"

@@ -8,6 +8,11 @@ from .config import TABLES
 from .records import get_record, records
 
 
+SECRET_REFERENCE_PREFIX = "secret://sentinel/"
+LEGACY_SECRET_REFERENCE_PREFIX = "kv/sentinel/"
+SECRET_REFERENCE_PATTERN = re.compile(r"^secret://sentinel/[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$")
+
+
 def require_text(payload: dict[str, Any], field: str) -> str:
     value = str(payload.get(field, "")).strip()
     if not value:
@@ -16,9 +21,19 @@ def require_text(payload: dict[str, Any], field: str) -> str:
 
 
 def require_reference(reference: str) -> str:
-    if not reference.startswith("kv/sentinel/"):
-        raise HTTPException(status_code=422, detail="OpenBao references must be under kv/sentinel/.")
-    return reference
+    normalized = str(reference).strip()
+    if not SECRET_REFERENCE_PATTERN.fullmatch(normalized):
+        raise HTTPException(status_code=422, detail="Secret references must use secret://sentinel/<name>.")
+    return normalized
+
+
+def migrate_legacy_reference(reference: str) -> str:
+    """Translate the retired provider-specific path form during startup only."""
+
+    normalized = str(reference).strip()
+    if normalized.startswith(LEGACY_SECRET_REFERENCE_PREFIX):
+        normalized = f"{SECRET_REFERENCE_PREFIX}{normalized.removeprefix(LEGACY_SECRET_REFERENCE_PREFIX)}"
+    return require_reference(normalized)
 
 
 def safe_identifier(name: str, prefix: str) -> str:
@@ -56,7 +71,7 @@ def find_case_insensitive(
 
 def credential_exists(reference: str) -> None:
     if not any(item["reference"] == reference for item in records("credentials")):
-        raise HTTPException(status_code=422, detail="The selected OpenBao reference does not exist.")
+        raise HTTPException(status_code=422, detail="The selected secret reference does not exist.")
 
 
 def host_addresses(host: dict[str, Any]) -> list[str]:

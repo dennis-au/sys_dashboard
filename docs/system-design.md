@@ -9,9 +9,9 @@ supervised Sentinel scheduler worker, and an internal Forgejo service for the
 private playbook repository.
 
 The API may persist Sentinel metadata locally and resolve Git-owned playbook
-metadata through Forgejo. It does not contact OLVM, SSH, OpenBao, Grafana, or
-other production infrastructure. Connection tests, manager syncs, and
-collection actions are explicit local simulations.
+metadata through Forgejo. It does not contact OLVM, SSH, an external secret
+provider, Grafana, or other production infrastructure. Connection tests,
+manager syncs, and collection actions are explicit local simulations.
 
 ## Application Architecture
 
@@ -86,7 +86,7 @@ A manual host has:
 - SSH user and port
 - role, environment, and tags/groups
 - lifecycle state: `active`, `disabled`, or `decommissioned`
-- an OpenBao credential reference
+- an external secret reference
 - collection and connectivity timestamps when an execution runtime is designed
 
 Manual hosts will participate in collection once that runtime exists. A
@@ -97,16 +97,16 @@ workflow.
 
 ## Credentials
 
-OpenBao is the planned production secrets service. Sentinel retains only an
-OpenBao path reference under `kv/sentinel`; raw passwords, SSH keys, tokens,
-and other secret material must never enter the database, source control, logs,
-browser storage, or UI list/detail views.
+Sentinel is independent of a specific secrets product. It retains only opaque,
+provider-neutral references using `secret://sentinel/...`; raw passwords, SSH
+keys, tokens, and other secret material must never enter the database, source
+control, logs, browser storage, or UI list/detail views.
 
 Manager and manual-host forms select references instead of accepting secrets.
-Their test actions remain simulations and do not contact OpenBao or
+Their test actions remain simulations and do not contact a secret provider or
 infrastructure. Settings owns SSH key reference management; the Credentials
 workspace owns API, token, username/password, and other service-reference
-metadata. Both surfaces retain only path, type, principal, allowed scope,
+metadata. Both surfaces retain only reference, type, principal, allowed scope,
 state, and usage. A saved reference update cascades to dependent profiles,
 managers, and manual hosts.
 
@@ -117,7 +117,8 @@ They are read-only fact gathering and must not provision, mutate, or remediate
 infrastructure.
 
 A profile references a versioned playbook path and Git revision, inventory
-scope, a five-field Linux cron schedule in UTC, and an OpenBao reference.
+scope, a five-field Linux cron schedule in UTC, and an external secret
+reference.
 Schedules are persisted as cron expressions, translated into a human-readable
 description in the portal, and are not represented by a single global interval.
 An empty schedule is manual-only. The local scheduler may queue only enabled
@@ -126,7 +127,7 @@ each profile/minute slot in PostgreSQL to prevent duplicate queueing.
 
 Playbook source is Git-owned in the private `sentinel-playbooks` repository.
 Profiles retain repository metadata, path, immutable commit SHA, scope,
-schedule, and OpenBao reference, but not source text. A browser edit creates
+schedule, and external secret reference, but not source text. A browser edit creates
 or updates a deterministic Forgejo profile-draft branch and pull request to
 protected `main`; PostgreSQL retains only branch, pull-request, commit, and
 review metadata. Sentinel cannot approve or merge that pull request. After an
@@ -136,7 +137,7 @@ sources are rejected by collection-run and syntax-check routes.
 
 The local development syntax check fetches the selected pinned Forgejo commit
 and runs `ansible-playbook --syntax-check` with an empty inventory. It does not
-contact a target host, OLVM, SSH, OpenBao, or Grafana, and is not a substitute
+contact a target host, OLVM, SSH, an external secret provider, or Grafana, and is not a substitute
 for a production runner, policy-approved linting, or a real collection run.
 Scheduled collections currently queue the same explicit, target-free simulation
 as a manual collection run.
@@ -288,11 +289,12 @@ read raw artifacts, credentials, or operational write tables.
 
 #### Credential And Output Safety
 
-Only the execution environment resolves OpenBao references. It uses
-source-scoped, short-lived access where supported and must not pass secret
-material to the Sentinel API, PostgreSQL, browser, logs, NDJSON artifacts, or
-Grafana. Collection tasks use field allowlists and `no_log` where required;
-the ingestion contract rejects unexpected secret-bearing fields.
+Only the execution environment resolves external secret references through an
+approved deployment-specific mechanism. It uses source-scoped, short-lived
+access where supported and must not pass secret material to the Sentinel API,
+PostgreSQL, browser, logs, NDJSON artifacts, or Grafana. Collection tasks use
+field allowlists and `no_log` where required; the ingestion contract rejects
+unexpected secret-bearing fields.
 
 #### Delivery Order
 
@@ -335,16 +337,17 @@ development only.
   stack. Its service token is available only through the internal secret mount.
 - Grafana owns dashboards, variables, panels, and layouts. Sentinel's
   Dashboards workspace is a catalog and handoff surface, not a builder.
-- Internal audit mode is disabled by default. When explicitly enabled for a
-  controlled test drive, the API and scheduler record redacted errors in
-  `sentinel.internal_audit_events`. Events are fingerprinted and deduplicated,
-  retention is capped by configuration, and they can be exported only from the
-  API container as NDJSON. Request bodies and headers are never stored, and
-  the audit stream has no HTTP or browser endpoint.
+- Internal audit mode is disabled by default and enabled only from Sentinel's
+  Settings workspace. When enabled for a controlled test drive, the API and
+  scheduler record redacted errors in `sentinel.internal_audit_events`. Events
+  are fingerprinted and deduplicated, retention is capped at 10,000 distinct
+  fingerprints, and they can be exported as a redacted NDJSON file from the
+  Settings workspace or API container. Request bodies and headers are never
+  stored, and the portal never renders audit event contents.
 
-Do not add live OLVM/SSH/OpenBao/Grafana connectivity, Grafana embedding, SSO,
-outgoing dashboard links, or a production execution runtime until an explicit
-backend deployment design is approved.
+Do not add live OLVM/SSH/secret-provider/Grafana connectivity, Grafana
+embedding, SSO, outgoing dashboard links, or a production execution runtime
+until an explicit backend deployment design is approved.
 
 ## Development Knowledge Graph
 

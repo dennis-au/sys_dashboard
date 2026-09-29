@@ -6,9 +6,11 @@ apply to every change.
 
 ## Architecture
 
-- Sentinel is a modular monolith: keep one dashboard/API stack and split code
-  by domain boundary, not into separately deployed services, queues, or APIs
-  unless explicitly requested.
+- Sentinel is a modular monolith: keep one release and shared codebase,
+  PostgreSQL schema, and domain contracts. The API and worker may run as
+  separate processes, but are not independently owned or deployed services.
+  Split code by domain boundary rather than adding service, queue, or API
+  boundaries unless explicitly requested.
 - Keep `backend/main.py` as the stable Uvicorn entry point. New application
   code belongs in `backend/sentinel` and must not import `main`.
 - Routers translate HTTP only; domain modules own business rules; shared
@@ -21,13 +23,15 @@ apply to every change.
 - The local stack may persist Sentinel metadata in PostgreSQL and resolve
   Git-owned playbook metadata through internal Forgejo.
 - Do not persist or expose raw passwords, SSH keys, tokens, or other secret
-  material. Sentinel records OpenBao references under `kv/sentinel` only.
+  material. Sentinel records provider-neutral opaque references using
+  `secret://sentinel/...` only.
 - Forgejo writes use either the one-time legacy-profile migration or a
   deterministic per-profile draft branch and protected-main review workflow.
   Browser source must pass through that workflow transiently and must never be
   persisted in PostgreSQL.
 - Connection tests, syncs, and collection actions are local simulations. They
-  must not contact OLVM, SSH, OpenBao, Grafana, or production infrastructure.
+  must not contact OLVM, SSH, an external secret provider, Grafana, or
+  production infrastructure.
 
 ## Inventory Ownership
 

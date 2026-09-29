@@ -8,3 +8,4 @@ knowledge/
 secrets/
 forgejo/secrets/
 .env
+.sentinel-production/

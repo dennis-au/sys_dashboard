@@ -30,11 +30,11 @@ volume or its token file while the stack is down, then run the bootstrap job.
 ## Production Secret Source
 
 Production replaces the development credential volume with a read-only secret
-mount populated by the deployment runtime from OpenBao. The planned OpenBao
-reference is `kv/sentinel/services/forgejo-api`; Sentinel configuration stores
-that reference and the token-file path only. The deployment runtime resolves
-the value and writes the mounted secret file without putting the raw token in
-the Compose file, image, database, source tree, or service environment.
+mount populated by the deployment runtime. Sentinel identifies that material
+only as `secret://sentinel/services/forgejo-api` and stores no provider-specific
+path or raw token. The deployment runtime resolves the value and writes the
+mounted secret file without putting the raw token in the Compose file, image,
+database, source tree, or service environment.
 
 ## Repository Governance
 

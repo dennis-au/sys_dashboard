@@ -1,0 +1,213 @@
+name: sentinel
+
+x-log-options: &log-options
+  driver: local
+  options:
+    max-size: 10m
+    max-file: "5"
+
+x-backend: &backend
+  image: sentinel-api:${SENTINEL_IMAGE_TAG:-production}
+  build:
+    context: ./backend
+  restart: unless-stopped
+  init: true
+  environment:
+    DATABASE_HOST: postgres
+    DATABASE_PORT: "5432"
+    DATABASE_NAME: ${POSTGRES_DB:-sentinel_db}
+    DATABASE_USER: ${POSTGRES_USER:-sentinel}
+    DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+    FORGEJO_API_TOKEN_FILE: /run/forgejo-service-credentials/forgejo_api_token
+    HOME: /tmp
+    XDG_CACHE_HOME: /tmp/.cache
+  secrets:
+    - postgres_password
+  volumes:
+    - forgejo-service-credentials:/run/forgejo-service-credentials:ro
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging: *log-options
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sentinel_db}
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinel} -d ${POSTGRES_DB:-sentinel_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - sentinel-postgres-data:/var/lib/postgresql/data
+    networks:
+      - database
+    logging: *log-options
+
+  api:
+    <<: *backend
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      forgejo-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - application
+      - database
+      - playbooks
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  worker:
+    <<: *backend
+    image: sentinel-worker:${SENTINEL_IMAGE_TAG:-production}
+    command: ["python", "-m", "sentinel.worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      forgejo-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - database
+      - playbooks
+
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:16.0.5-rootless
+    user: "1000:1000"
+    restart: unless-stopped
+    environment:
+      FORGEJO____APP_NAME: Sentinel Playbooks
+      FORGEJO__server__DOMAIN: forgejo
+      FORGEJO__server__ROOT_URL: http://forgejo:3000/
+      FORGEJO__server__DISABLE_SSH: "true"
+      FORGEJO__security__INSTALL_LOCK: "true"
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      FORGEJO__service__REQUIRE_SIGNIN_VIEW: "true"
+      FORGEJO__repository__DEFAULT_PRIVATE: "private"
+    volumes:
+      - forgejo-data:/var/lib/gitea
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/api/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - playbooks
+    logging: *log-options
+
+  forgejo-credentials-init:
+    image: alpine:3.22
+    user: "0:0"
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /run/sentinel-forgejo-credentials
+        chown 1000:1000 /run/sentinel-forgejo-credentials
+        chmod 700 /run/sentinel-forgejo-credentials
+    volumes:
+      - forgejo-service-credentials:/run/sentinel-forgejo-credentials
+    restart: "no"
+    logging: *log-options
+
+  forgejo-bootstrap:
+    image: sentinel-forgejo-bootstrap:${SENTINEL_IMAGE_TAG:-production}
+    build:
+      context: ./forgejo
+    user: "1000:1000"
+    depends_on:
+      forgejo:
+        condition: service_healthy
+      forgejo-credentials-init:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "/bootstrap/bootstrap.sh"]
+    volumes:
+      - forgejo-data:/var/lib/gitea
+      - forgejo-service-credentials:/run/sentinel-forgejo-credentials
+    networks:
+      - playbooks
+    restart: "no"
+    logging: *log-options
+
+  dashboard:
+    image: sentinel-dashboard:${SENTINEL_IMAGE_TAG:-production}
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    restart: unless-stopped
+    init: true
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - application
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+      - /var/log/nginx
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *log-options
+
+  caddy:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    init: true
+    depends_on:
+      dashboard:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ${SENTINEL_RUNTIME_DIR:?Run scripts/deploy-production first}/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - application
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    logging: *log-options
+
+secrets:
+  postgres_password:
+    file: ${SENTINEL_RUNTIME_DIR:?Run scripts/deploy-production first}/postgres_password
+
+volumes:
+  sentinel-postgres-data:
+  forgejo-data:
+  forgejo-service-credentials:
+  caddy-data:
+  caddy-config:
+
+networks:
+  application:
+  database:
+    internal: true
+  playbooks:
+    internal: true

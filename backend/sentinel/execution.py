@@ -1,6 +1,6 @@
 """Target-free artifact construction used by a future supervised worker.
 
-This module does not invoke Ansible or resolve an OpenBao reference.  It owns
+This module does not invoke Ansible or resolve an external secret reference. It owns
 only the deterministic, sanitized handoff from a future executor to ingestion.
 """
 

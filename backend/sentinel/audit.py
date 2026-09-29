@@ -8,13 +8,14 @@ import logging
 import re
 import traceback as traceback_module
 from datetime import datetime, timezone
+from collections.abc import Iterator
 from typing import Any
 from uuid import uuid4
 
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from .config import internal_audit_log_enabled, internal_audit_log_max_events
+from .config import INTERNAL_AUDIT_LOG_MAX_EVENTS
 from .records import database_connection
 
 
@@ -33,6 +34,18 @@ _REDACTION_RULES = (
 
 def audit_schema_statements() -> list[str]:
     return [
+        """
+        CREATE TABLE IF NOT EXISTS sentinel.internal_audit_settings (
+            singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+            enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        INSERT INTO sentinel.internal_audit_settings (singleton, enabled)
+        VALUES (TRUE, FALSE)
+        ON CONFLICT (singleton) DO NOTHING
+        """,
         """
         CREATE TABLE IF NOT EXISTS sentinel.internal_audit_events (
             id TEXT PRIMARY KEY,
@@ -58,6 +71,44 @@ def audit_schema_statements() -> list[str]:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def read_internal_audit_settings() -> dict[str, bool]:
+    """Return the persisted runtime setting without exposing event data."""
+
+    try:
+        with database_connection() as connection, connection.cursor(row_factory=dict_row) as cursor:
+            cursor.execute(
+                "SELECT enabled FROM sentinel.internal_audit_settings WHERE singleton = TRUE"
+            )
+            row = cursor.fetchone()
+    except Exception:
+        LOGGER.error("Internal audit settings could not be read")
+        return {"enabled": False}
+    return {"enabled": bool(row["enabled"]) if row else False}
+
+
+def set_internal_audit_enabled(enabled: bool) -> dict[str, bool]:
+    """Persist the operator-controlled diagnostic capture state."""
+
+    with database_connection() as connection, connection.cursor(row_factory=dict_row) as cursor:
+        cursor.execute(
+            """
+            INSERT INTO sentinel.internal_audit_settings (singleton, enabled)
+            VALUES (TRUE, %s)
+            ON CONFLICT (singleton) DO UPDATE SET
+                enabled = EXCLUDED.enabled,
+                updated_at = NOW()
+            RETURNING enabled
+            """,
+            (enabled,),
+        )
+        row = cursor.fetchone()
+    return {"enabled": bool(row["enabled"])}
+
+
+def internal_audit_log_enabled() -> bool:
+    return read_internal_audit_settings()["enabled"]
 
 
 def _redact_text(value: Any, *, maximum_length: int = 24000) -> str:
@@ -177,7 +228,7 @@ def record_event(
                     OFFSET %s
                 )
                 """,
-                (internal_audit_log_max_events(),),
+                (INTERNAL_AUDIT_LOG_MAX_EVENTS,),
             )
     except Exception:
         LOGGER.error("Internal audit event persistence failed for %s", event_kind)
@@ -227,18 +278,38 @@ def export_events(limit: int = 1000) -> list[dict[str, Any]]:
         return list(cursor.fetchall())
 
 
-def ndjson_events(limit: int = 1000) -> str:
-    records = export_events(limit)
-    return "\n".join(
-        json.dumps(
-            {
-                **record,
-                "first_occurred_at": record["first_occurred_at"].astimezone(timezone.utc).isoformat(),
-                "last_occurred_at": record["last_occurred_at"].astimezone(timezone.utc).isoformat(),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        )
-        for record in records
+def _serialize_event(record: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            **record,
+            "first_occurred_at": record["first_occurred_at"].astimezone(timezone.utc).isoformat(),
+            "last_occurred_at": record["last_occurred_at"].astimezone(timezone.utc).isoformat(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
     )
+
+
+def iter_ndjson_events(limit: int = 1000) -> Iterator[str]:
+    """Yield a bounded redacted export without loading the full file into memory."""
+
+    normalized_limit = min(max(limit, 1), INTERNAL_AUDIT_LOG_MAX_EVENTS)
+    with database_connection() as connection, connection.cursor(row_factory=dict_row) as cursor:
+        cursor.execute(
+            """
+            SELECT id, fingerprint, first_occurred_at, last_occurred_at, occurrence_count,
+                   service, event_kind, request_id, route, method, status_code,
+                   exception_type, message, traceback, context
+            FROM sentinel.internal_audit_events
+            ORDER BY last_occurred_at DESC, id DESC
+            LIMIT %s
+            """,
+            (normalized_limit,),
+        )
+        for record in cursor:
+            yield f"{_serialize_event(record)}\n"
+
+
+def ndjson_events(limit: int = 1000) -> str:
+    return "".join(iter_ndjson_events(limit)).rstrip("\n")

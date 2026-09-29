@@ -21,11 +21,9 @@ services:
       context: ./backend
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-sentinel_db}
-      SENTINEL_INTERNAL_AUDIT_LOG_MODE: ${SENTINEL_INTERNAL_AUDIT_LOG_MODE:-false}
-      SENTINEL_INTERNAL_AUDIT_LOG_MAX_EVENTS: ${SENTINEL_INTERNAL_AUDIT_LOG_MAX_EVENTS:-10000}
       # This is a path only. The bootstrap container writes the local development
       # token to the named volume; a production deployment replaces it with an
-      # OpenBao-supplied secret at the same path.
+      # platform-managed secret at the same path.
       FORGEJO_API_TOKEN_FILE: /run/secrets/forgejo_api_token
     depends_on:
       postgres:
@@ -48,8 +46,6 @@ services:
     command: ["python", "-m", "sentinel.worker"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-sentinel_db}
-      SENTINEL_INTERNAL_AUDIT_LOG_MODE: ${SENTINEL_INTERNAL_AUDIT_LOG_MODE:-false}
-      SENTINEL_INTERNAL_AUDIT_LOG_MAX_EVENTS: ${SENTINEL_INTERNAL_AUDIT_LOG_MAX_EVENTS:-10000}
       FORGEJO_API_TOKEN_FILE: /run/secrets/forgejo_api_token
     depends_on:
       postgres:

@@ -5,7 +5,7 @@ and the future Grafana catalog. It is computed only from structured tables and
 curated `reporting` views; it never parses the legacy activity display text.
 
 The local development build always labels the document `simulation`. It does
-not claim that Sentinel contacted an OLVM manager, SSH target, OpenBao,
+not claim that Sentinel contacted an OLVM manager, SSH target, external secret provider,
 Ansible, Grafana, or any other external service.
 
 ```json

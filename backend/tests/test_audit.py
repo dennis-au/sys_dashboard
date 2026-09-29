@@ -34,10 +34,11 @@ def clear_audit_events() -> None:
 
 
 @pytest.fixture(autouse=True)
-def audit_mode(monkeypatch):
+def audit_mode():
     clear_audit_events()
-    monkeypatch.setenv("SENTINEL_INTERNAL_AUDIT_LOG_MODE", "true")
+    audit.set_internal_audit_enabled(True)
     yield
+    audit.set_internal_audit_enabled(False)
     clear_audit_events()
 
 
@@ -90,3 +91,21 @@ def test_internal_audit_captures_unhandled_errors_once_without_leaking_detail():
     assert event["occurrence_count"] == 1
     assert "must-not-leak" not in audit.ndjson_events()
     assert "[redacted]" in event["message"]
+
+
+def test_internal_audit_export_download_is_redacted_ndjson_attachment():
+    audit.record_event(
+        service="audit-test",
+        event_kind="export_regression",
+        message="token=export-secret",
+    )
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/api/settings/internal-audit/export")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    assert "attachment; filename=\"sentinel-diagnostics-" in response.headers["content-disposition"]
+    assert response.text.endswith("\n")
+    assert "export-secret" not in response.text
+    assert '"event_kind":"export_regression"' in response.text
