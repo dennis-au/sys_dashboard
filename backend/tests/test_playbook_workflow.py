@@ -169,6 +169,18 @@ def test_playbook_read_and_history_are_forgejo_backed_without_local_source():
     assert "playbookContent" not in item
 
 
+def test_pinned_history_includes_selected_revision_when_file_history_omits_it():
+    client = WorkflowForgejo()
+    client.file_history = lambda path, ref, limit=50: [ForgejoHistoryEntry(HISTORY_SHA, "Older", None)]
+
+    history = profile_playbook_history(profile(), client)
+
+    assert history["revisions"] == [
+        {"commitSha": MAIN_SHA, "message": "revision", "authoredAt": None, "selected": True},
+        {"commitSha": HISTORY_SHA, "message": "Older", "authoredAt": None, "selected": False},
+    ]
+
+
 def test_pending_migration_history_inspects_the_selected_review_revision():
     history = profile_playbook_history(profile(state="migration-pending-review"), WorkflowForgejo())
 

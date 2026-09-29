@@ -1097,6 +1097,14 @@ function updateModelSource(profile, model, response, { replaceVersions = false }
         return { ...existingVersions.get(version.sha), ...version };
       })
       .filter((item) => item.sha || item.state !== "source-unavailable");
+    const currentIndex = history.findIndex((item) => item.sha && item.sha === current.sha);
+    if (currentIndex >= 0) {
+      // History contains revision metadata only; retain the transient bytes fetched
+      // for the selected immutable revision so it remains editable as a Git draft.
+      history.splice(currentIndex, 1, { ...history[currentIndex], ...current });
+    } else if (current.sha) {
+      history.unshift(current);
+    }
     model.versions = history.length ? history : [current];
   } else {
     const existingIndex = model.versions.findIndex((item) => item.sha && item.sha === current.sha);
@@ -1147,8 +1155,15 @@ function renderPlaybookEditor(profile, preserveSource = false) {
   sourceInput.placeholder = version?.content ? "" : model.loading ? "Loading Git-owned playbook source..." : "Git playbook source is unavailable from the workflow API.";
   const saveButton = document.querySelector("#save-playbook-button");
   document.querySelector("#save-playbook-label").textContent = versionStateLabel(version).toLowerCase().includes("draft") ? "Update draft" : "Create draft";
-  saveButton.disabled = !model.api.draft || !version?.content || model.loading;
-  saveButton.title = saveButton.disabled ? "The Git draft workflow is unavailable for this source" : "Create or update a Git draft";
+  const draftAvailable = model.api.draft && Boolean(version?.content) && !model.loading;
+  saveButton.disabled = !draftAvailable;
+  saveButton.title = draftAvailable
+    ? "Create or update a Git draft"
+    : model.loading
+      ? "Loading the selected Git revision"
+      : !model.api.draft
+        ? "The Git draft workflow is unavailable for this source"
+        : "The selected Git revision source could not be loaded";
   document.querySelector("#check-playbook-syntax-button").disabled = !version?.runnable || model.loading;
   renderPlaybookEditorStatus(version);
   renderPlaybookVersionList(profile, model);

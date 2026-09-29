@@ -170,6 +170,14 @@ def profile_playbook_history(profile: dict[str, Any], client: ForgejoClient) -> 
             ]
         else:
             history = client.file_history(path, repository.default_branch)
+            if selected_sha not in {entry.sha.lower() for entry in history}:
+                revision = client.revision(selected_sha)
+                history.insert(
+                    0,
+                    ForgejoHistoryEntry(
+                        sha=require_commit_sha(revision.sha), message=revision.message, authored_at=None
+                    ),
+                )
     except ForgejoConfigurationError as exc:
         raise HTTPException(status_code=503, detail="Forgejo service credential is unavailable.") from exc
     except ForgejoError as exc:
