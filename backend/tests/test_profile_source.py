@@ -11,6 +11,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 import main
 from forgejo_client import ForgejoFile, ForgejoHistoryEntry, ForgejoRepository, ForgejoRequestError, ForgejoRevision
+from sentinel.profiles import resolve_profile_update_source
 
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -87,6 +88,23 @@ def test_profile_source_rejects_a_commit_that_is_not_reachable_from_protected_ma
 
     assert raised.value.status_code == 422
     assert "protected main" in raised.value.detail
+
+
+def test_schedule_only_profile_update_reuses_existing_pinned_merge_source():
+    existing = source_request()
+    existing["source"].update(
+        {
+            "state": "pinned",
+            "merge": {"pullRequestNumber": 2, "mergeCommitSha": SHA},
+        }
+    )
+    payload = source_request()
+    client = SourceClient()
+    client.file_history = lambda path, ref, limit=50: []
+
+    source = resolve_profile_update_source(payload, existing, client)
+
+    assert source == existing["source"]
 
 
 @pytest.mark.parametrize("client", [SourceClient(missing_file=True), SourceClient(denied=True)])

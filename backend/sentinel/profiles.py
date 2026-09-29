@@ -78,6 +78,27 @@ def resolve_profile_source(payload: dict[str, Any], client: ForgejoClient) -> di
     }
 
 
+def resolve_profile_update_source(
+    payload: dict[str, Any], existing: dict[str, Any], client: ForgejoClient
+) -> dict[str, Any]:
+    """Keep the trusted source when an update does not change its identity.
+
+    A profile can be pinned to a protected-main merge commit that Forgejo's
+    file-history endpoint does not list. Settings such as a cron schedule must
+    not force that immutable source through fresh path-history validation.
+    """
+    existing_source = profile_source_metadata(existing)
+    requested_source = payload.get("source")
+    requested_repository = requested_source.get("repository") if isinstance(requested_source, dict) else None
+    if (
+        profile_request_path(payload) == existing_source.get("path")
+        and profile_request_revision(payload) == existing_source.get("commitSha")
+        and (not requested_repository or requested_repository == existing_source.get("repository"))
+    ):
+        return dict(existing_source)
+    return resolve_profile_source(payload, client)
+
+
 def public_profile(profile: dict[str, Any]) -> dict[str, Any]:
     result = dict(profile)
     result.pop("playbookContent", None)

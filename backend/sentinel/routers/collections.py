@@ -16,7 +16,7 @@ from ..playbooks import (
     require_runnable_source,
     syntax_check_pinned_profile,
 )
-from ..profiles import build_profile, public_profile, resolve_profile_source
+from ..profiles import build_profile, public_profile, resolve_profile_source, resolve_profile_update_source
 from ..config import DATABASE_URL
 from ..records import records, store_record
 from ..validation import current_record_or_404
@@ -38,13 +38,14 @@ def update_profile(
     payload: dict[str, Any],
     client: ForgejoClient = Depends(get_forgejo_client),
 ) -> dict[str, Any]:
+    existing = current_record_or_404("profiles", profile_id)
     return public_profile(
         store_record(
             "profiles",
             build_profile(
                 payload,
-                resolve_profile_source(payload, client),
-                current_record_or_404("profiles", profile_id),
+                resolve_profile_update_source(payload, existing, client),
+                existing,
             ),
         )
     )
