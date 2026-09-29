@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+# Run the API regression suite against disposable Docker resources. This must
+# remain separate from an installed Sentinel project because the suite asserts
+# an empty database at the beginning of several contracts.
+set -euo pipefail
+
+project="sentinel-test-$(date +%s)-$$"
+
+cleanup() {
+  docker compose --project-name "$project" down --volumes --remove-orphans >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+docker compose --project-name "$project" up --detach --build api
+docker compose --project-name "$project" exec -T api pytest -q tests

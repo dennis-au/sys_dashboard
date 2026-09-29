@@ -2,16 +2,20 @@
 
 ## Purpose And Scope
 
-Sentinel is an infrastructure inventory dashboard. It is implemented as a
-modular monolith and developed locally with Docker Desktop. The development
-stack contains an Nginx frontend, FastAPI API, PostgreSQL, a separately
-supervised Sentinel scheduler worker, and an internal Forgejo service for the
-private playbook repository.
+Sentinel is an infrastructure information-gathering and dashboard application.
+It is implemented as a modular monolith and developed locally with Docker
+Desktop. The stack contains an Nginx frontend, FastAPI API, PostgreSQL, a
+separately supervised Sentinel scheduler worker, and an internal Forgejo
+service for the private playbook repository.
 
-The API may persist Sentinel metadata locally and resolve Git-owned playbook
-metadata through Forgejo. It does not contact OLVM, SSH, an external secret
-provider, Grafana, or other production infrastructure. Connection tests,
-manager syncs, and collection actions are explicit local simulations.
+Sentinel gathers approved read-only facts from source systems, validates the
+resulting artifacts, and projects current inventory, historical reporting,
+freshness, capacity, and alert data for the portal and Grafana. The production
+execution path uses explicit source configuration, scoped secret references,
+immutable playbook provenance, and source-specific adapters. A development
+environment without a configured adapter reports unavailable sources or no
+collected data; it does not generate a successful result as a substitute for
+target contact.
 
 ## Application Architecture
 
@@ -21,7 +25,7 @@ one codebase, release, PostgreSQL schema, and domain contracts.
 Domain code is organized inside `backend/sentinel`:
 
 - `routers`: HTTP request and response translation by workspace
-- `inventory`: manual-host rules and future OLVM reconciliation rules
+- `inventory`: manual-host rules and OLVM reconciliation rules
 - `managers`, `credentials`, `profiles`, and `collections`: domain behavior
 - `records`, `validation`, and `bootstrap`: shared persistence, validation,
   startup, and migration support
@@ -47,7 +51,7 @@ Every host has exactly one owner:
 
 | Source type | Owner | Lifecycle and update rules |
 | --- | --- | --- |
-| `olvm` | OLVM dynamic inventory sync | A future collector discovers, updates, and retires resources using stable Engine identity. |
+| `olvm` | OLVM dynamic inventory sync | The OLVM adapter discovers and reconciles VM inventory through stable Engine identity. It never overwrites manual hosts or hard-deletes a missing resource. |
 | `manual` | Human operator | Operators create, edit, disable, and decommission the host. OLVM reconciliation cannot modify it. |
 
 The UI identifies source ownership in host lists and details. OLVM hosts show
@@ -60,9 +64,10 @@ action with collision review.
 
 ## OLVM Reconciliation
 
-There is no OLVM collector implementation in this repository yet.
-`backend/sentinel/inventory.py` defines the ownership, identity, collision, and
-pruning rules that a future collector must use.
+`backend/sentinel/olvm.py` performs bounded, read-only Engine REST connection
+tests and VM listing. `backend/sentinel/routers/managers.py` applies the
+authoritative successful response through the ownership, identity, collision,
+and pruning rules in `backend/sentinel/inventory.py`.
 
 The collector may manage only hosts with `sourceType: "olvm"` and stable Engine
 identity metadata. Manual and unresolved hosts are preserved. An OLVM resource
@@ -87,13 +92,14 @@ A manual host has:
 - role, environment, and tags/groups
 - lifecycle state: `active`, `disabled`, or `decommissioned`
 - an external secret reference
-- collection and connectivity timestamps when an execution runtime is designed
+- live connection-test and collection outcomes, when configured
 
-Manual hosts will participate in collection once that runtime exists. A
-collection refresh may update gathered facts but does not alter source
-ownership. Retirement uses `disabled` or `decommissioned` first, retaining
-collection history; hard deletion requires a future retention and confirmation
-workflow.
+Manual hosts participate in the Linux/SSH collection path when an enabled
+profile is pinned to a reviewed Git commit and the runtime secret and route are
+available. A collection refresh may update gathered facts but does not alter
+source ownership. Retirement uses `disabled` or `decommissioned` first,
+retaining collection history; hard deletion requires a future retention and
+confirmation workflow.
 
 ## Credentials
 
@@ -103,12 +109,17 @@ keys, tokens, and other secret material must never enter the database, source
 control, logs, browser storage, or UI list/detail views.
 
 Manager and manual-host forms select references instead of accepting secrets.
-Their test actions remain simulations and do not contact a secret provider or
-infrastructure. Settings owns SSH key reference management; the Credentials
-workspace owns API, token, username/password, and other service-reference
-metadata. Both surfaces retain only reference, type, principal, allowed scope,
-state, and usage. A saved reference update cascades to dependent profiles,
-managers, and manual hosts.
+At execution time, a source adapter resolves the scoped reference and performs
+only its approved read-only operation. Settings owns SSH key management: it can
+retain an external reference or generate an Ed25519 key pair. For Sentinel-
+generated keys, PostgreSQL and browser responses retain only the opaque
+`secret://sentinel/managed-ssh/<id>` reference, public key, fingerprint,
+algorithm, scope, state, and usage. The private half is written with mode
+`0600` to the restricted runtime key volume; it is never returned, logged,
+exported, or stored in PostgreSQL. The Credentials workspace owns API, token,
+username/password, and other service-reference metadata. A saved reference
+update cascades to dependent profiles, managers, and manual hosts, except that
+a Sentinel-managed SSH key reference is immutable.
 
 ## Collection Profiles And Playbooks
 
@@ -135,22 +146,22 @@ authorized human merge, an operator explicitly pins the protected-`main`
 commit. Only `source.state: pinned` is runnable; migration-pending and draft
 sources are rejected by collection-run and syntax-check routes.
 
-The local development syntax check fetches the selected pinned Forgejo commit
-and runs `ansible-playbook --syntax-check` with an empty inventory. It does not
-contact a target host, OLVM, SSH, an external secret provider, or Grafana, and is not a substitute
-for a production runner, policy-approved linting, or a real collection run.
-Scheduled collections currently queue the same explicit, target-free simulation
-as a manual collection run.
+Syntax check fetches the selected pinned Forgejo commit and runs
+`ansible-playbook --syntax-check` with an empty inventory. It validates
+playbook syntax without contacting a target host and is separate from a
+collection run. The scheduler reserves an eligible profile/minute slot, then
+dispatches a read-only collection run to the approved execution boundary.
 
-### Production Collection And Ingestion Design
+### Information Gathering And Ingestion Design
 
-This section is the approved target design for a future production execution
-phase. The local application implements its safe internal foundation: canonical
-fact and manifest validation, atomic sanitized-artifact storage, idempotent
-receipt and projection, Linux filesystem reporting views, and a dedicated
-scheduler worker. It does not enable live collection. Live connectivity,
-production credentials, and deployment changes require a separate
-implementation and operational approval.
+This is Sentinel's operating design for read-only infrastructure collection.
+The implemented Linux executor resolves runtime-only secrets, uses a temporary
+Ansible inventory, runs an immutable Git-pinned facts-only Ansible playbook,
+writes sanitized artifacts atomically, and projects typed Linux system identity,
+filesystem, and capacity facts. The deployed OLVM adapter performs separate
+inventory reconciliation.
+Sources remain unavailable until their secret material and approved network
+route are configured.
 
 #### Module Boundaries
 
@@ -159,8 +170,8 @@ The implementation uses focused modules under `backend/sentinel`:
 - `collections`: profile validation, collection-run lifecycle, and user-visible
   run history
 - `scheduling`: due-profile evaluation and idempotent run reservation
-- `execution`: sanitized artifact construction for a future dynamic-target
-  Ansible dispatcher; it does not invoke Ansible or external services today
+- `execution`: dynamic-target Ansible dispatch with source-scoped credentials
+  and sanitized artifact construction
 - `artifacts`: atomic protected-filesystem storage and checksum-verified reads
   for sanitized immutable artifacts
 - `ingestion`: artifact receipt, contract validation, idempotency, error
@@ -172,8 +183,8 @@ These modules communicate through database records and versioned collection
 artifacts, not through browser payloads or cross-domain table writes. The
 scheduler worker is a separately supervised process of the Sentinel deployment
 rather than a second application. It uses the same release, migrations, and
-domain contracts as the API. A future execution loop belongs in that same
-worker boundary.
+domain contracts as the API. The execution loop belongs in that same worker
+boundary.
 
 #### Schedule And Dispatch Ownership
 
@@ -202,11 +213,12 @@ dispatch. The execution worker derives its target inventory from Sentinel's
 owned configuration at that point. It does not trust a static inventory group
 to establish ownership.
 
-Ansible collection roles gather and shape typed facts. A controller-side output
-adapter writes one or more sanitized NDJSON artifacts and one manifest; normal
-Ansible stdout is not an ingestion interface. Parallel targets must write
-isolated output files or events before a deterministic final merge, rather than
-concurrently appending to one file.
+The current Linux runner allows only Ansible facts-only plays: every play must
+set `gather_facts: true` and cannot contain tasks, privilege escalation,
+includes, roles, or other execution controls. A controller-side callback emits
+only a small allowlisted fact subset into a temporary NDJSON event file; normal
+Ansible stdout is never an ingestion interface. Parallel target support must
+keep isolated events and deterministically merge them before artifact creation.
 
 The manifest records the run ID, artifact paths, schema versions, record counts,
 checksums, collection window, source instances, collector version, and final
@@ -258,20 +270,19 @@ OLVM-owned inventory using stable Engine identity; it must preserve manual and
 unresolved hosts and must not prune from a partial or failed run.
 
 The existing collection-run and reporting tables are the migration starting
-point. The local artifact-ingestion migration is versioned as
+point. The artifact-ingestion migration is versioned as
 `2026-09-28-artifact-ingestion-v1` and adds the receipt, ledger, structured
 error, source-instance, projection, and Linux reporting-view foundation.
-Production work extends its execution-mode constraints and semantics; it must
-not create a parallel, competing `collector_run` model. New ingestion tables
-and all constraint changes require explicit, versioned PostgreSQL migrations
-with replay and rollback coverage.
+Execution-mode extensions must not create a parallel, competing `collector_run`
+model. New ingestion tables and all constraint changes require explicit,
+versioned PostgreSQL migrations with replay and rollback coverage.
 
 #### Storage, Retention, And Reporting
 
 Sanitized immutable artifacts are retained in controlled object storage or a
-protected filesystem location. The local filesystem writer performs atomic
-gzip writes and checksum-verified reads but is not yet attached to a live
-execution runtime or retention provider. PostgreSQL retains artifact metadata,
+protected filesystem location. The filesystem writer performs atomic gzip
+writes and checksum-verified reads; the production runner and retention
+provider must use that contract. PostgreSQL retains artifact metadata,
 checksums, receipt state, and operational projections; it does not need a
 duplicate copy of every artifact payload. Access to artifacts follows
 operational audit and retention policy.
@@ -299,13 +310,14 @@ unexpected secret-bearing fields.
 #### Delivery Order
 
 1. Define record schemas, manifests, stable source identities, redaction rules,
-   retention, and PostgreSQL migrations. The safe local contract and initial
-   migration are implemented; production retention still requires approval.
-2. Implement and test a Linux filesystem collection path, including interrupted
-   runs, artifact replay, duplicate delivery, and a reporting view. The
-   target-free artifact/projection path, replay coverage, and reporting view
-   are implemented; a live Linux runner remains a production gate.
-3. Add OLVM fact collection and its separate authoritative reconciliation path.
+   retention, and PostgreSQL migrations.
+2. Implement and test the Linux filesystem collection path, including
+   interrupted runs, artifact replay, duplicate delivery, a reporting view, and
+   a production runner that uses approved non-production targets first.
+   The runner and isolated unit coverage are implemented; an approved
+   non-production target integration test remains required before production
+   enablement.
+3. Add OLVM fact collection beyond the implemented VM inventory reconciliation.
 4. Add Kubernetes object inventory and requested/allocatable capacity.
 5. Enable Kubernetes pod or container metrics and large-directory scans only
    after their volume, retention, and failure limits are verified.
@@ -333,10 +345,15 @@ development only.
 - PostgreSQL `sentinel_db` holds Sentinel operational data. Its curated
   `reporting` schema is read-only to Grafana.
 - `grafana_db` is separate and holds Grafana configuration.
+- Grafana is served through the authenticated Sentinel origin at `/grafana/`.
+  The portal reads only Grafana health and dashboard catalog metadata through a
+  Viewer service account stored in a Docker-managed runtime volume. Sentinel
+  never proxies Grafana's write API or persists dashboard definitions.
 - Forgejo hosts the private `sentinel-playbooks` repository inside the Compose
   stack. Its service token is available only through the internal secret mount.
-- Grafana owns dashboards, variables, panels, and layouts. Sentinel's
-  Dashboards workspace is a catalog and handoff surface, not a builder.
+- Sentinel owns operational inventory, freshness, run-state, integration
+  status, and Grafana handoff. Grafana owns composed analytical dashboards,
+  variables, panels, and layouts.
 - Internal audit mode is disabled by default and enabled only from Sentinel's
   Settings workspace. When enabled for a controlled test drive, the API and
   scheduler record redacted errors in `sentinel.internal_audit_events`. Events
@@ -345,9 +362,9 @@ development only.
   Settings workspace or API container. Request bodies and headers are never
   stored, and the portal never renders audit event contents.
 
-Do not add live OLVM/SSH/secret-provider/Grafana connectivity, Grafana
-embedding, SSO, outgoing dashboard links, or a production execution runtime
-until an explicit backend deployment design is approved.
+Live OLVM, SSH, secret-provider, and Grafana integrations require explicit
+deployment configuration, scoped access, source-specific failure handling,
+audit coverage, and integration tests against approved non-production targets.
 
 ## Development Knowledge Graph
 

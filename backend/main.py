@@ -2,7 +2,7 @@
 
 from sentinel.app import app
 from sentinel.bootstrap import initialize_database
-from sentinel.collections import basic_playbook_issues, create_run, simulated_result
+from sentinel.collections import basic_playbook_issues, create_run
 from sentinel.config import (
     DATABASE_URL,
     DEFAULT_OLVM_PRUNE_AFTER_MISSING_RUNS,
@@ -92,7 +92,6 @@ __all__ = [
     "require_text",
     "resolve_profile_source",
     "safe_identifier",
-    "simulated_result",
     "store_host",
     "store_olvm_identity",
     "store_record",

@@ -1,8 +1,9 @@
 # Sentinel Development Guardrails
 
 Read [docs/system-design.md](docs/system-design.md) for the complete system
-design, data model, deployment plan, and future-state decisions. These rules
-apply to every change.
+design, data model, deployment plan, and operating decisions. Sentinel is an
+infrastructure information-gathering and dashboard product. These rules apply
+to every change.
 
 ## Architecture
 
@@ -20,8 +21,13 @@ apply to every change.
 
 ## Integration And Secrets
 
-- The local stack may persist Sentinel metadata in PostgreSQL and resolve
-  Git-owned playbook metadata through internal Forgejo.
+- Sentinel gathers approved, read-only infrastructure information from OLVM,
+  Linux/SSH, and future source adapters, then projects validated records for
+  the portal and Grafana reporting views. Development and unit tests use
+  isolated fakes or a dry-run executor; production collection requires explicit
+  source configuration and an approved runtime.
+- Sentinel persists operational metadata in PostgreSQL and resolves Git-owned
+  playbook metadata through internal Forgejo.
 - Do not persist or expose raw passwords, SSH keys, tokens, or other secret
   material. Sentinel records provider-neutral opaque references using
   `secret://sentinel/...` only.
@@ -29,9 +35,12 @@ apply to every change.
   deterministic per-profile draft branch and protected-main review workflow.
   Browser source must pass through that workflow transiently and must never be
   persisted in PostgreSQL.
-- Connection tests, syncs, and collection actions are local simulations. They
-  must not contact OLVM, SSH, an external secret provider, Grafana, or
-  production infrastructure.
+- Connection tests, manager syncs, and collection runs are real operational
+  workflows when their integration is enabled. They must be read-only against
+  target infrastructure, use only a scoped secret reference at execution time,
+  record provenance and outcomes, and never turn an unavailable integration
+  into a fabricated success. Unit and browser tests must not contact external
+  infrastructure.
 
 ## Inventory Ownership
 
@@ -50,12 +59,16 @@ apply to every change.
 
 - Collection profiles are read-only fact gathering. They must never provision,
   mutate, or remediate infrastructure.
+- Collected records require source identity, collection timestamp, collector
+  and immutable playbook provenance, and validation before they reach current
+  inventory, historical reporting, alerts, or dashboards.
 - Profile source remains Git-owned. Browser drafts and local preflight must not
   persist source to PostgreSQL.
 - Credentials remain references only and must never be rendered, logged, or
   exported as secret values.
-- Grafana owns dashboard composition. Sentinel provides a catalog and handoff,
-  not an in-app dashboard builder.
+- Sentinel provides inventory, freshness, run-state, and alert dashboards.
+  Grafana owns composed analytical dashboards and reads only curated reporting
+  views through a dedicated read-only database role.
 
 ## Verification And Tooling
 

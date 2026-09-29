@@ -9,7 +9,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from sentinel.reporting import SIMULATION_MESSAGE, build_summary
+from sentinel.reporting import build_summary
 from sentinel.bootstrap import initialize_database
 
 
@@ -25,7 +25,10 @@ def reporting_data(**overrides):
 def test_summary_reports_sensible_empty_state_without_fixture_display_strings():
     result = build_summary(reporting_data(), now=NOW)
 
-    assert result["mode"] == {"kind": "simulation", "message": SIMULATION_MESSAGE}
+    assert result["mode"] == {
+        "kind": "unavailable",
+        "message": "No completed live collection is available.",
+    }
     assert result["freshness"] == {
         "state": "unavailable",
         "latestCollectedAt": None,
@@ -44,7 +47,7 @@ def test_summary_uses_structured_partial_results_capacity_and_alerts():
         "run_id": "run-1",
         "run_name": "Collection",
         "state": "partial",
-        "execution_mode": "simulation",
+        "execution_mode": "live",
         "requested_at": "2026-09-28T09:40:00Z",
         "completed_at": "2026-09-28T09:45:00Z",
         "duration_ms": 300000,
@@ -72,13 +75,14 @@ def test_summary_uses_structured_partial_results_capacity_and_alerts():
                 {"cpu_cores": 4, "memory_total_bytes": 100, "memory_used_bytes": 55, "disk_total_bytes": 200, "disk_used_bytes": 150}
             ],
             alerts=[
-                {"id": "alert-1", "severity": "warning", "state": "open", "category": "capacity.disk", "summary": "Disk review", "observed_at": "2026-09-28T09:45:00Z", "execution_mode": "simulation"}
+                {"id": "alert-1", "severity": "warning", "state": "open", "category": "capacity.disk", "summary": "Disk review", "observed_at": "2026-09-28T09:45:00Z", "execution_mode": "live"}
             ],
         ),
         now=NOW,
     )
 
     assert result["freshness"]["state"] == "fresh"
+    assert result["mode"]["kind"] == "degraded"
     assert result["inventory"]["total"] == 3
     assert result["inventory"]["active"] == 2
     assert result["inventory"]["health"] == {"healthy": 1, "review": 1, "unreachable": 0, "unknown": 0}
@@ -106,7 +110,7 @@ def test_summary_marks_all_unreachable_and_stale_from_timestamps_not_copy():
                     "run_id": "run-2",
                     "run_name": "Collection",
                     "state": "unreachable",
-                    "execution_mode": "simulation",
+                    "execution_mode": "live",
                     "requested_at": "2026-09-28T05:00:00Z",
                     "completed_at": "2026-09-28T05:01:00Z",
                     "source_type": "inventory",
@@ -121,6 +125,7 @@ def test_summary_marks_all_unreachable_and_stale_from_timestamps_not_copy():
     )
 
     assert result["freshness"]["state"] == "stale"
+    assert result["mode"]["kind"] == "degraded"
     assert result["freshness"]["ageSeconds"] == 17940
     assert result["collections"]["outcomes"]["allUnreachable"] is True
     assert result["collections"]["outcomes"]["successRate"] == 0.0
@@ -132,17 +137,17 @@ def test_summary_ignores_queued_runs_for_latest_completed_collection():
             runs=[
                 {
                     "run_id": "queued",
-                    "run_name": "Queued simulation",
+                    "run_name": "Queued collection",
                     "state": "queued",
-                    "execution_mode": "simulation",
+                    "execution_mode": "live",
                     "requested_at": "2026-09-28T09:59:00Z",
                     "source_type": "inventory",
                 },
                 {
                     "run_id": "completed",
-                    "run_name": "Completed simulation",
+                    "run_name": "Completed collection",
                     "state": "completed",
-                    "execution_mode": "simulation",
+                    "execution_mode": "live",
                     "requested_at": "2026-09-28T09:00:00Z",
                     "completed_at": "2026-09-28T09:01:00Z",
                     "source_type": "inventory",
@@ -157,6 +162,7 @@ def test_summary_ignores_queued_runs_for_latest_completed_collection():
     )
 
     assert result["collections"]["latest"]["runId"] == "completed"
+    assert result["mode"]["kind"] == "operational"
     assert result["collections"]["outcomes"]["successful"] == 1
     assert result["recentActivity"][0]["runId"] == "queued"
 

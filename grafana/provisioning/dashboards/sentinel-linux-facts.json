@@ -1,0 +1,71 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "postgres", "uid": "sentinel-reporting"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "title": "Completed live collections",
+      "type": "stat",
+      "targets": [{"format": "table", "rawSql": "SELECT count(*)::numeric AS value FROM reporting.collection_runs WHERE execution_mode = 'live' AND state = 'completed';", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "sentinel-reporting"},
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "title": "Managed Linux hosts",
+      "type": "stat",
+      "targets": [{"format": "table", "rawSql": "SELECT count(*)::numeric AS value FROM reporting.host_health WHERE source_type = 'manual';", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "sentinel-reporting"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "id": 3,
+      "options": {"cellHeight": "sm", "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false}, "showHeader": true},
+      "title": "Linux operating system facts",
+      "type": "table",
+      "targets": [{"format": "table", "rawSql": "SELECT host_id AS \"Host ID\", hostname AS \"Hostname\", distribution AS \"Distribution\", distribution_version AS \"Version\", os_family AS \"OS family\", kernel AS \"Kernel\", architecture AS \"Architecture\", observed_at AS \"Observed\" FROM reporting.linux_system_current ORDER BY hostname;", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "sentinel-reporting"},
+      "fieldConfig": {"defaults": {"unit": "bytes"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "id": 4,
+      "options": {"cellHeight": "sm", "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false}, "showHeader": true},
+      "title": "Latest Linux capacity",
+      "type": "table",
+      "targets": [{"format": "table", "rawSql": "SELECT host_name AS \"Host\", cpu_cores AS \"CPU cores\", memory_total_bytes AS \"Memory total\", memory_used_bytes AS \"Memory used\", disk_total_bytes AS \"Disk total\", disk_used_bytes AS \"Disk used\", observed_at AS \"Observed\" FROM reporting.host_capacity_latest ORDER BY host_name;", "refId": "A"}]
+    },
+    {
+      "datasource": {"type": "postgres", "uid": "sentinel-reporting"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 13},
+      "id": 5,
+      "options": {"cellHeight": "sm", "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false}, "showHeader": true},
+      "title": "Collection runs",
+      "type": "table",
+      "targets": [{"format": "table", "rawSql": "SELECT run_name AS \"Run\", state AS \"State\", source_path AS \"Playbook\", source_commit_sha AS \"Commit\", requested_at AS \"Requested\", completed_at AS \"Completed\", failure_reason AS \"Failure\" FROM reporting.collection_runs WHERE execution_mode = 'live' ORDER BY requested_at DESC LIMIT 25;", "refId": "A"}]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["sentinel", "linux", "infrastructure"],
+  "templating": {"list": []},
+  "time": {"from": "now-30d", "to": "now"},
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "Sentinel Linux facts",
+  "uid": "sentinel-linux-facts",
+  "version": 1,
+  "weekStart": ""
+}

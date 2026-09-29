@@ -28,7 +28,9 @@ SENSITIVE_FIELD_MARKERS = (
     "client_key",
 )
 RECORD_TYPE_SOURCE_TYPES = {
+    "linux.system_fact.v1": "linux",
     "linux.filesystem_snapshot.v1": "linux",
+    "linux.capacity_snapshot.v1": "linux",
     "ovirt.vm_fact.v1": "olvm",
     "ovirt.storage_capacity_snapshot.v1": "olvm",
     "k8s.cluster_fact.v1": "kubernetes",
@@ -136,7 +138,17 @@ def _non_negative_integer(payload: dict[str, Any], key: str) -> int:
 
 
 def _require_payload_fields(record_type: str, payload: dict[str, Any]) -> None:
-    if record_type == "linux.filesystem_snapshot.v1":
+    if record_type == "linux.system_fact.v1":
+        for key in (
+            "hostname",
+            "osFamily",
+            "distribution",
+            "distributionVersion",
+            "kernel",
+            "architecture",
+        ):
+            _require_text(payload.get(key), f"payload.{key}")
+    elif record_type == "linux.filesystem_snapshot.v1":
         _require_text(payload.get("mountPath"), "payload.mountPath")
         _require_text(payload.get("filesystemType"), "payload.filesystemType")
         total = _non_negative_integer(payload, "totalBytes")
@@ -144,6 +156,19 @@ def _require_payload_fields(record_type: str, payload: dict[str, Any]) -> None:
         _non_negative_integer(payload, "availableBytes")
         if used > total:
             raise FactContractError("payload.usedBytes cannot exceed payload.totalBytes.")
+    elif record_type == "linux.capacity_snapshot.v1":
+        for key in (
+            "cpuCores",
+            "memoryTotalBytes",
+            "memoryUsedBytes",
+            "diskTotalBytes",
+            "diskUsedBytes",
+        ):
+            _non_negative_integer(payload, key)
+        if payload["memoryUsedBytes"] > payload["memoryTotalBytes"]:
+            raise FactContractError("payload.memoryUsedBytes cannot exceed payload.memoryTotalBytes.")
+        if payload["diskUsedBytes"] > payload["diskTotalBytes"]:
+            raise FactContractError("payload.diskUsedBytes cannot exceed payload.diskTotalBytes.")
     elif record_type == "ovirt.storage_capacity_snapshot.v1":
         total = _non_negative_integer(payload, "totalBytes")
         used = _non_negative_integer(payload, "usedBytes")

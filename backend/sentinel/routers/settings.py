@@ -8,7 +8,13 @@ from ..audit import iter_ndjson_events, read_internal_audit_settings, set_intern
 from ..config import INTERNAL_AUDIT_LOG_MAX_EVENTS
 from ..credentials import update_credential_references
 from ..records import store_record
-from ..ssh_keys import build_ssh_key_reference
+from ..ssh_keys import (
+    SshKeyGenerationError,
+    build_generated_ssh_key,
+    build_ssh_key_reference,
+    generate_managed_ssh_key,
+    remove_managed_ssh_key,
+)
 from ..validation import current_record_or_404
 
 
@@ -44,6 +50,20 @@ def export_internal_audit_events() -> StreamingResponse:
 @router.post("/api/settings/ssh-keys", status_code=status.HTTP_201_CREATED)
 def create_ssh_key_reference(payload: dict[str, Any]) -> dict[str, Any]:
     return store_record("credentials", build_ssh_key_reference(payload))
+
+
+@router.post("/api/settings/ssh-keys/generate", status_code=status.HTTP_201_CREATED)
+def generate_ssh_key(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        generated = generate_managed_ssh_key()
+    except SshKeyGenerationError as exc:
+        raise HTTPException(status_code=503, detail="Managed SSH key generation is unavailable.") from exc
+    try:
+        record = build_generated_ssh_key(payload, generated)
+        return store_record("credentials", record)
+    except Exception:
+        remove_managed_ssh_key(generated.reference)
+        raise
 
 
 @router.put("/api/settings/ssh-keys/{credential_id}")

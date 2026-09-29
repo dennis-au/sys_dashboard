@@ -1,4 +1,4 @@
-"""Structured, simulation-only reporting records and summary calculations."""
+"""Structured live-run reporting records and summary calculations."""
 
 from __future__ import annotations
 
@@ -10,11 +10,68 @@ from uuid import uuid4
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from .records import database_connection
+from .records import database_connection, get_record, store_record
 
 
 SUMMARY_STALE_AFTER = timedelta(hours=2)
-SIMULATION_MESSAGE = "Sentinel actions are currently simulated; no target or external service was contacted."
+LEGACY_SIMULATION_MESSAGE = "Historical simulation record. No target or external service was contacted."
+LIVE_EXECUTION_MODE = "live"
+LEGACY_EXECUTION_MODE = "simulation"
+RUN_STATES = frozenset(
+    {
+        "queued",
+        "dispatched",
+        "running",
+        "artifact-uploaded",
+        "ingesting",
+        "completed",
+        "partial",
+        "unreachable",
+        "failed",
+    }
+)
+TERMINAL_RUN_STATES = frozenset({"completed", "partial", "unreachable", "failed"})
+HOST_RESULT_STATES = frozenset({"queued", "success", "unreachable", "failed", "skipped"})
+
+
+def _replace_check_constraint_statement(
+    table: str, column: str, constraint: str, definition: str
+) -> str:
+    """Build an idempotent migration for an existing column check constraint."""
+
+    return f"""
+    DO $$
+    DECLARE existing_constraint TEXT;
+    BEGIN
+      FOR existing_constraint IN
+        SELECT constraint_row.conname
+        FROM pg_constraint constraint_row
+        JOIN pg_class table_row ON table_row.oid = constraint_row.conrelid
+        JOIN pg_namespace table_schema ON table_schema.oid = table_row.relnamespace
+        JOIN pg_attribute column_row
+          ON column_row.attrelid = table_row.oid
+         AND column_row.attnum = ANY (constraint_row.conkey)
+        WHERE table_schema.nspname = 'sentinel'
+          AND table_row.relname = '{table}'
+          AND column_row.attname = '{column}'
+          AND constraint_row.contype = 'c'
+      LOOP
+        EXECUTE format('ALTER TABLE sentinel.{table} DROP CONSTRAINT %I', existing_constraint);
+      END LOOP;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint constraint_row
+        JOIN pg_class table_row ON table_row.oid = constraint_row.conrelid
+        JOIN pg_namespace table_schema ON table_schema.oid = table_row.relnamespace
+        WHERE table_schema.nspname = 'sentinel'
+          AND table_row.relname = '{table}'
+          AND constraint_row.conname = '{constraint}'
+      ) THEN
+        ALTER TABLE sentinel.{table}
+          ADD CONSTRAINT {constraint} {definition};
+      END IF;
+    END $$
+    """
 
 
 def reporting_schema_statements() -> list[str]:
@@ -32,8 +89,8 @@ def reporting_schema_statements() -> list[str]:
             source_path TEXT,
             source_commit_sha TEXT,
             source_state TEXT,
-            execution_mode TEXT NOT NULL CHECK (execution_mode IN ('simulation')),
-            state TEXT NOT NULL CHECK (state IN ('queued', 'completed', 'partial', 'unreachable', 'failed')),
+            execution_mode TEXT NOT NULL CONSTRAINT collection_run_details_execution_mode_check CHECK (execution_mode IN ('live', 'simulation')),
+            state TEXT NOT NULL CONSTRAINT collection_run_details_state_check CHECK (state IN ('queued', 'dispatched', 'running', 'artifact-uploaded', 'ingesting', 'completed', 'partial', 'unreachable', 'failed')),
             requested_at TIMESTAMPTZ NOT NULL,
             started_at TIMESTAMPTZ,
             completed_at TIMESTAMPTZ,
@@ -54,8 +111,8 @@ def reporting_schema_statements() -> list[str]:
             source_path TEXT,
             source_commit_sha TEXT,
             source_state TEXT,
-            execution_mode TEXT NOT NULL CHECK (execution_mode IN ('simulation')),
-            state TEXT NOT NULL CHECK (state IN ('queued', 'success', 'unreachable', 'failed', 'skipped')),
+            execution_mode TEXT NOT NULL CONSTRAINT collection_host_results_execution_mode_check CHECK (execution_mode IN ('live', 'simulation')),
+            state TEXT NOT NULL CONSTRAINT collection_host_results_state_check CHECK (state IN ('queued', 'success', 'unreachable', 'failed', 'skipped')),
             started_at TIMESTAMPTZ,
             completed_at TIMESTAMPTZ,
             duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
@@ -74,7 +131,7 @@ def reporting_schema_statements() -> list[str]:
             memory_used_bytes BIGINT CHECK (memory_used_bytes IS NULL OR memory_used_bytes >= 0),
             disk_total_bytes BIGINT CHECK (disk_total_bytes IS NULL OR disk_total_bytes >= 0),
             disk_used_bytes BIGINT CHECK (disk_used_bytes IS NULL OR disk_used_bytes >= 0),
-            execution_mode TEXT NOT NULL CHECK (execution_mode IN ('simulation'))
+            execution_mode TEXT NOT NULL CONSTRAINT host_capacity_facts_execution_mode_check CHECK (execution_mode IN ('live', 'simulation'))
         )
         """,
         """
@@ -89,7 +146,7 @@ def reporting_schema_statements() -> list[str]:
             summary TEXT NOT NULL,
             observed_at TIMESTAMPTZ NOT NULL,
             resolved_at TIMESTAMPTZ,
-            execution_mode TEXT NOT NULL CHECK (execution_mode IN ('simulation'))
+            execution_mode TEXT NOT NULL CONSTRAINT collection_alerts_execution_mode_check CHECK (execution_mode IN ('live', 'simulation'))
         )
         """,
         # The development build formerly exposed an unrelated display-string
@@ -103,6 +160,32 @@ def reporting_schema_statements() -> list[str]:
         "DROP VIEW IF EXISTS reporting.collection_runs",
         "ALTER TABLE sentinel.collection_run_details ADD COLUMN IF NOT EXISTS source_state TEXT",
         "ALTER TABLE sentinel.collection_host_results ADD COLUMN IF NOT EXISTS source_state TEXT",
+        # Existing development volumes were created with simulation-only checks.
+        # Replace only constraints tied to these columns; row data remains intact.
+        _replace_check_constraint_statement(
+            "collection_run_details", "execution_mode", "collection_run_details_execution_mode_check",
+            "CHECK (execution_mode IN ('live', 'simulation'))",
+        ),
+        _replace_check_constraint_statement(
+            "collection_run_details", "state", "collection_run_details_state_check",
+            "CHECK (state IN ('queued', 'dispatched', 'running', 'artifact-uploaded', 'ingesting', 'completed', 'partial', 'unreachable', 'failed'))",
+        ),
+        _replace_check_constraint_statement(
+            "collection_host_results", "execution_mode", "collection_host_results_execution_mode_check",
+            "CHECK (execution_mode IN ('live', 'simulation'))",
+        ),
+        _replace_check_constraint_statement(
+            "collection_host_results", "state", "collection_host_results_state_check",
+            "CHECK (state IN ('queued', 'success', 'unreachable', 'failed', 'skipped'))",
+        ),
+        _replace_check_constraint_statement(
+            "host_capacity_facts", "execution_mode", "host_capacity_facts_execution_mode_check",
+            "CHECK (execution_mode IN ('live', 'simulation'))",
+        ),
+        _replace_check_constraint_statement(
+            "collection_alerts", "execution_mode", "collection_alerts_execution_mode_check",
+            "CHECK (execution_mode IN ('live', 'simulation'))",
+        ),
         "CREATE INDEX IF NOT EXISTS collection_host_results_run_id_idx ON sentinel.collection_host_results (run_id)",
         "CREATE INDEX IF NOT EXISTS collection_host_results_completed_at_idx ON sentinel.collection_host_results (completed_at DESC)",
         "CREATE INDEX IF NOT EXISTS host_capacity_facts_host_observed_idx ON sentinel.host_capacity_facts (host_id, observed_at DESC)",
@@ -255,7 +338,7 @@ def _run_context(profile: dict[str, Any] | None) -> dict[str, str | None]:
     }
 
 
-def record_simulated_collection(
+def reserve_live_collection(
     run: dict[str, Any],
     *,
     hosts: Iterable[dict[str, Any]] = (),
@@ -265,7 +348,7 @@ def record_simulated_collection(
     trigger: str = "manual",
     expected_source_instances: Iterable[dict[str, str]] = (),
 ) -> None:
-    """Append a queued simulation record without claiming a completed collection."""
+    """Reserve one live collection before an adapter contacts a source."""
 
     requested_at = utc_now()
     context = _run_context(profile)
@@ -276,7 +359,7 @@ def record_simulated_collection(
             INSERT INTO sentinel.collection_run_details (
                 run_id, name, profile_id, profile_name, manager_id, source_type,
                 source_path, source_commit_sha, source_state, execution_mode, state, requested_at, metadata
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'simulation', 'queued', %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'live', 'queued', %s, %s)
             ON CONFLICT (run_id) DO NOTHING
             """,
             (
@@ -291,11 +374,7 @@ def record_simulated_collection(
                 context["source_state"],
                 requested_at,
                 Jsonb(
-                    {
-                        "message": SIMULATION_MESSAGE,
-                        "trigger": trigger,
-                        "expectedSourceInstances": list(expected_source_instances),
-                    }
+                    {"trigger": trigger, "expectedSourceInstances": list(expected_source_instances)}
                 ),
             ),
         )
@@ -305,7 +384,7 @@ def record_simulated_collection(
                 INSERT INTO sentinel.collection_host_results (
                     id, run_id, host_id, host_name, source_type, manager_id, profile_id,
                     source_path, source_commit_sha, source_state, execution_mode, state
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'simulation', 'queued')
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'live', 'queued')
                 """,
                 (
                     f"result-{uuid4().hex}",
@@ -320,6 +399,191 @@ def record_simulated_collection(
                     context["source_state"],
                 ),
             )
+
+
+def mark_collection_running(run_id: str) -> None:
+    """Mark a reserved run as started without exposing adapter output."""
+
+    with database_connection() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE sentinel.collection_run_details
+            SET state = 'running', started_at = COALESCE(started_at, NOW())
+            WHERE run_id = %s AND state IN ('queued', 'dispatched')
+            """,
+            (run_id,),
+        )
+    _update_legacy_run(run_id, "Running")
+
+
+def record_host_outcomes(
+    run_id: str,
+    outcomes: Iterable[dict[str, Any]],
+    *,
+    manager_id: str | None = None,
+) -> None:
+    """Persist explicit target outcomes, without storing command output."""
+
+    items = list(outcomes)
+    if not items:
+        return
+    with database_connection() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT profile_id, source_path, source_commit_sha, source_state, source_type, manager_id
+            FROM sentinel.collection_run_details
+            WHERE run_id = %s
+            """,
+            (run_id,),
+        )
+        run = cursor.fetchone()
+        if run is None:
+            raise ValueError("Collection run does not exist.")
+        profile_id, source_path, source_commit_sha, source_state, default_source_type, persisted_manager_id = run
+        for item in items:
+            host_id = str(item.get("host_id") or item.get("hostId") or "").strip()
+            host_name = str(item.get("host_name") or item.get("hostName") or host_id).strip()
+            state = str(item.get("state") or "").strip()
+            if not host_id or not host_name or state not in HOST_RESULT_STATES:
+                raise ValueError("Collection host outcome is invalid.")
+            source_type = str(item.get("source_type") or item.get("sourceType") or default_source_type)
+            source_manager_id = item.get("manager_id") or item.get("managerId") or manager_id or persisted_manager_id
+            reason = item.get("reason")
+            reason_text = str(reason)[:512] if isinstance(reason, str) and reason else None
+            cursor.execute(
+                """
+                SELECT id FROM sentinel.collection_host_results
+                WHERE run_id = %s AND host_id = %s
+                ORDER BY id
+                LIMIT 1
+                """,
+                (run_id, host_id),
+            )
+            existing = cursor.fetchone()
+            if existing:
+                cursor.execute(
+                    """
+                    UPDATE sentinel.collection_host_results
+                    SET state = %s,
+                        started_at = COALESCE(started_at, NOW()),
+                        completed_at = CASE WHEN %s = 'queued' THEN completed_at ELSE NOW() END,
+                        duration_ms = CASE
+                            WHEN %s = 'queued' THEN duration_ms
+                            ELSE GREATEST(0, (EXTRACT(EPOCH FROM (NOW() - COALESCE(started_at, NOW()))) * 1000)::INTEGER)
+                        END,
+                        reason = %s
+                    WHERE id = %s
+                    """,
+                    (state, state, state, reason_text, existing[0]),
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO sentinel.collection_host_results (
+                        id, run_id, host_id, host_name, source_type, manager_id, profile_id,
+                        source_path, source_commit_sha, source_state, execution_mode, state,
+                        started_at, completed_at, duration_ms, reason
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'live', %s,
+                        NOW(), CASE WHEN %s = 'queued' THEN NULL ELSE NOW() END,
+                        CASE WHEN %s = 'queued' THEN NULL ELSE 0 END, %s
+                    )
+                    """,
+                    (
+                        f"result-{uuid4().hex}",
+                        run_id,
+                        host_id,
+                        host_name,
+                        source_type,
+                        source_manager_id,
+                        profile_id,
+                        source_path,
+                        source_commit_sha,
+                        source_state,
+                        state,
+                        state,
+                        state,
+                        reason_text,
+                    ),
+                )
+
+
+def complete_live_collection(run_id: str, state: str, *, failure_reason: str | None = None) -> None:
+    """Complete one live run with a bounded operator-safe reason."""
+
+    if state not in TERMINAL_RUN_STATES:
+        raise ValueError("Collection terminal state is invalid.")
+    safe_reason = str(failure_reason)[:512] if failure_reason else None
+    with database_connection() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE sentinel.collection_run_details
+            SET state = %s,
+                started_at = COALESCE(started_at, requested_at),
+                completed_at = NOW(),
+                duration_ms = GREATEST(0, (EXTRACT(EPOCH FROM (NOW() - COALESCE(started_at, requested_at))) * 1000)::INTEGER),
+                failure_reason = %s
+            WHERE run_id = %s
+            """,
+            (state, safe_reason, run_id),
+        )
+    labels = {
+        "completed": "Completed",
+        "partial": "Partial",
+        "unreachable": "Unreachable",
+        "failed": "Failed",
+    }
+    _update_legacy_run(run_id, labels[state], safe_reason)
+
+
+def _update_legacy_run(run_id: str, status: str, failure_reason: str | None = None) -> None:
+    """Keep the existing Collections activity surface aligned with live run state."""
+
+    run = get_record("runs", run_id)
+    if run is None:
+        return
+    updated = dict(run)
+    updated["status"] = status
+    updated["date"] = iso_timestamp(utc_now())
+    if failure_reason:
+        updated["summary"] = failure_reason
+        updated["type"] = "warn"
+    elif status == "Completed":
+        updated["summary"] = "Live collection completed."
+        updated["type"] = "success"
+    elif status in {"Partial", "Unreachable", "Failed"}:
+        updated["summary"] = "Live collection completed with target issues."
+        updated["type"] = "warn"
+    store_record("runs", updated)
+
+
+def claim_queued_profile_runs(limit: int = 8) -> list[dict[str, Any]]:
+    """Claim queued profile runs so only the supervised worker can execute them."""
+
+    if limit < 1:
+        return []
+    with database_connection() as connection, connection.transaction(), connection.cursor(row_factory=dict_row) as cursor:
+        cursor.execute(
+            """
+            WITH queued AS (
+                SELECT run_id
+                FROM sentinel.collection_run_details
+                WHERE execution_mode = 'live'
+                  AND state = 'queued'
+                  AND profile_id IS NOT NULL
+                ORDER BY requested_at, run_id
+                FOR UPDATE SKIP LOCKED
+                LIMIT %s
+            )
+            UPDATE sentinel.collection_run_details AS details
+            SET state = 'dispatched'
+            FROM queued
+            WHERE details.run_id = queued.run_id
+            RETURNING details.run_id, details.profile_id, details.name
+            """,
+            (limit,),
+        )
+        return list(cursor.fetchall())
 
 
 def _rows(query: str) -> list[dict[str, Any]]:
@@ -344,7 +608,8 @@ def latest_completed_run(runs: Iterable[dict[str, Any]]) -> dict[str, Any] | Non
     completed = [
         run
         for run in runs
-        if run.get("state") in {"completed", "partial", "unreachable", "failed"}
+        if run.get("execution_mode") == LIVE_EXECUTION_MODE
+        and run.get("state") in TERMINAL_RUN_STATES
         and run.get("completed_at") is not None
     ]
     return max(completed, key=lambda run: as_utc(run["completed_at"]) or datetime.min.replace(tzinfo=timezone.utc), default=None)
@@ -392,7 +657,22 @@ def build_summary(
     failed = outcome_counts["failed"]
     all_unreachable = attempted_total > 0 and unreachable == attempted_total
 
-    completed_at = as_utc(completed.get("completed_at")) if completed else None
+    collected_run = next(
+        (
+            run
+            for run in sorted(
+                runs,
+                key=lambda row: as_utc(row.get("completed_at"))
+                or datetime.min.replace(tzinfo=timezone.utc),
+                reverse=True,
+            )
+            if run.get("execution_mode") == LIVE_EXECUTION_MODE
+            and run.get("state") in TERMINAL_RUN_STATES
+            and run.get("completed_at") is not None
+        ),
+        None,
+    )
+    completed_at = as_utc(collected_run.get("completed_at")) if collected_run else None
     age_seconds = (
         max(0, int((generated_at - completed_at).total_seconds())) if completed_at is not None else None
     )
@@ -439,9 +719,25 @@ def build_summary(
             }
         )
 
+    if completed is None:
+        mode = {
+            "kind": "unavailable",
+            "message": "No completed live collection is available.",
+        }
+    elif completed.get("state") == "completed":
+        mode = {
+            "kind": "operational",
+            "message": "Reporting is based on accepted live collection data.",
+        }
+    else:
+        mode = {
+            "kind": "degraded",
+            "message": "The latest live collection completed with unavailable or partial targets.",
+        }
+
     return {
         "generatedAt": iso_timestamp(generated_at),
-        "mode": {"kind": "simulation", "message": SIMULATION_MESSAGE},
+        "mode": mode,
         "freshness": {
             "state": freshness_state,
             "latestCollectedAt": iso_timestamp(completed_at),

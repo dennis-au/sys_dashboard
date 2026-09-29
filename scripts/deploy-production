@@ -6,6 +6,7 @@ runtime_dir="${SENTINEL_RUNTIME_DIR:-$project_root/.sentinel-production}"
 environment_file="$runtime_dir/deployment.env"
 caddyfile="$runtime_dir/Caddyfile"
 password_file="$runtime_dir/postgres_password"
+secret_directory="$runtime_dir/secrets"
 caddy_image="caddy:2.8.4-alpine"
 
 fail() {
@@ -54,6 +55,10 @@ SENTINEL_ADMIN_USERNAME=${SENTINEL_ADMIN_USERNAME:-}
 POSTGRES_DB=${POSTGRES_DB:-sentinel_db}
 POSTGRES_USER=${POSTGRES_USER:-sentinel}
 SENTINEL_IMAGE_TAG=${SENTINEL_IMAGE_TAG:-production}
+GRAFANA_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-}
+GRAFANA_CONFIG_DB_PASSWORD=${GRAFANA_CONFIG_DB_PASSWORD:-}
+GRAFANA_REPORTING_DB_PASSWORD=${GRAFANA_REPORTING_DB_PASSWORD:-}
 EOF
 }
 
@@ -106,6 +111,16 @@ main() {
 
   mkdir -p "$runtime_dir"
   chmod 700 "$runtime_dir"
+  mkdir -p "$secret_directory"
+  chmod 700 "$secret_directory"
+  find "$secret_directory" -type f -exec chmod 600 {} +
+  # Sentinel processes run as UID/GID 1000. Normalize the bind-mounted
+  # runtime-secret ownership before starting those non-root containers.
+  docker run --rm \
+    --volume "$secret_directory:/run/sentinel-secrets" \
+    --entrypoint /bin/sh \
+    alpine:3.22 \
+    -ec 'chown -R 1000:1000 /run/sentinel-secrets && chmod 700 /run/sentinel-secrets && find /run/sentinel-secrets -type f -exec chmod 600 {} +'
   load_existing_configuration
 
   prompt_if_missing SENTINEL_DOMAIN "Public Sentinel DNS name"
@@ -118,6 +133,16 @@ main() {
     openssl rand -hex 32 > "$password_file"
   fi
   chmod 600 "$password_file"
+
+  if [[ -z "${GRAFANA_CONFIG_DB_PASSWORD:-}" ]]; then
+    GRAFANA_CONFIG_DB_PASSWORD="$(openssl rand -hex 32)"
+  fi
+  if [[ -z "${GRAFANA_REPORTING_DB_PASSWORD:-}" ]]; then
+    GRAFANA_REPORTING_DB_PASSWORD="$(openssl rand -hex 32)"
+  fi
+  if [[ -z "${GRAFANA_ADMIN_PASSWORD:-}" ]]; then
+    GRAFANA_ADMIN_PASSWORD="$(openssl rand -hex 32)"
+  fi
 
   if [[ ! -s "$caddyfile" || -n "${SENTINEL_ADMIN_PASSWORD:-}" ]]; then
     write_caddyfile

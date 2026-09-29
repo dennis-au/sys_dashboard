@@ -300,6 +300,40 @@ def apply_ingestion_migration(cursor) -> None:
     cursor.execute("INSERT INTO sentinel.schema_migrations (version) VALUES (%s)", (version,))
 
 
+def apply_linux_system_fact_migration(cursor) -> None:
+    """Add typed Linux OS identity projection without rewriting inventory rows."""
+
+    version = "2026-09-29-linux-system-facts-v1"
+    cursor.execute("SELECT 1 FROM sentinel.schema_migrations WHERE version = %s", (version,))
+    if cursor.fetchone() is not None:
+        return
+    statements = [
+        """
+        CREATE TABLE IF NOT EXISTS sentinel.linux_system_current (
+            host_id TEXT PRIMARY KEY,
+            hostname TEXT NOT NULL,
+            os_family TEXT NOT NULL,
+            distribution TEXT NOT NULL,
+            distribution_version TEXT NOT NULL,
+            kernel TEXT NOT NULL,
+            architecture TEXT NOT NULL,
+            observed_at TIMESTAMPTZ NOT NULL,
+            run_id TEXT NOT NULL
+        )
+        """,
+        "DROP VIEW IF EXISTS reporting.linux_system_current",
+        """
+        CREATE VIEW reporting.linux_system_current AS
+        SELECT host_id, hostname, os_family, distribution, distribution_version,
+               kernel, architecture, observed_at, run_id
+        FROM sentinel.linux_system_current
+        """,
+    ]
+    for statement in statements:
+        cursor.execute(statement)
+    cursor.execute("INSERT INTO sentinel.schema_migrations (version) VALUES (%s)", (version,))
+
+
 def _utc_timestamp(value: Any, label: str) -> str:
     if not isinstance(value, str):
         raise ArtifactContractError(f"{label} is required.")
@@ -426,7 +460,7 @@ def _source_exists(cursor, source_type: str, source_id: str) -> bool:
     if source_type == "linux":
         cursor.execute("SELECT 1 FROM sentinel.hosts WHERE id = %s", (source_id,))
     elif source_type == "olvm":
-        cursor.execute("SELECT 1 FROM sentinel.olvm_managers WHERE id = %s", (source_id,))
+        cursor.execute("SELECT 1 FROM sentinel.managers WHERE id = %s", (source_id,))
     else:
         cursor.execute(
             "SELECT 1 FROM sentinel.collection_source_instances WHERE id = %s AND source_type = 'kubernetes' AND state = 'enabled'",
@@ -494,7 +528,37 @@ def _transition(cursor, run_id: str, state: str, *, failure_reason: str | None =
 
 def _project_fact(cursor, fact: CanonicalFact) -> None:
     payload = fact.payload
-    if fact.record_type == "linux.filesystem_snapshot.v1":
+    if fact.record_type == "linux.system_fact.v1":
+        cursor.execute(
+            """
+            INSERT INTO sentinel.linux_system_current (
+                host_id, hostname, os_family, distribution, distribution_version,
+                kernel, architecture, observed_at, run_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (host_id) DO UPDATE SET
+              hostname = EXCLUDED.hostname,
+              os_family = EXCLUDED.os_family,
+              distribution = EXCLUDED.distribution,
+              distribution_version = EXCLUDED.distribution_version,
+              kernel = EXCLUDED.kernel,
+              architecture = EXCLUDED.architecture,
+              observed_at = EXCLUDED.observed_at,
+              run_id = EXCLUDED.run_id
+            WHERE sentinel.linux_system_current.observed_at <= EXCLUDED.observed_at
+            """,
+            (
+                fact.source_id,
+                str(payload["hostname"]),
+                str(payload["osFamily"]),
+                str(payload["distribution"]),
+                str(payload["distributionVersion"]),
+                str(payload["kernel"]),
+                str(payload["architecture"]),
+                fact.observed_at,
+                fact.run_id,
+            ),
+        )
+    elif fact.record_type == "linux.filesystem_snapshot.v1":
         values = (
             fact.source_id,
             fact.resource_id,
@@ -533,6 +597,29 @@ def _project_fact(cursor, fact: CanonicalFact) -> None:
             ON CONFLICT (record_key) DO NOTHING
             """,
             (fact.record_key, fact.run_id, fact.source_id, fact.resource_id, str(payload["mountPath"]), payload["totalBytes"], payload["usedBytes"], payload["availableBytes"], fact.observed_at),
+        )
+    elif fact.record_type == "linux.capacity_snapshot.v1":
+        cursor.execute(
+            """
+            INSERT INTO sentinel.host_capacity_facts (
+                id, run_id, host_id, host_name, observed_at, cpu_cores,
+                memory_total_bytes, memory_used_bytes, disk_total_bytes,
+                disk_used_bytes, execution_mode
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'live')
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (
+                f"capacity-{fact.record_key}",
+                fact.run_id,
+                fact.source_id,
+                fact.display_name or fact.source_id,
+                fact.observed_at,
+                payload["cpuCores"],
+                payload["memoryTotalBytes"],
+                payload["memoryUsedBytes"],
+                payload["diskTotalBytes"],
+                payload["diskUsedBytes"],
+            ),
         )
     elif fact.record_type == "ovirt.vm_fact.v1":
         _upsert_current(cursor, "sentinel.ovirt_vm_current", ("manager_id", "vm_id"), fact)

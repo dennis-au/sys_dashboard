@@ -152,16 +152,16 @@
               <p>Dashboards are composed and maintained in Grafana</p>
             </div>
             <div class="grafana-command-actions">
-              <button class="outline-button" id="open-grafana-button" disabled title="Grafana is not deployed in this local build"><span class="icon" data-icon="arrow-right"></span>Grafana unavailable</button>
-              <button class="primary-button" id="open-grafana-builder-button" disabled title="Dashboard composition is available after Grafana is deployed"><span class="icon" data-icon="plus"></span>Build unavailable</button>
+              <button class="outline-button" id="open-grafana-button" disabled title="Checking Grafana"><span class="icon" data-icon="arrow-right"></span>Grafana unavailable</button>
+              <button class="primary-button" id="open-grafana-builder-button" disabled title="Checking Grafana"><span class="icon" data-icon="edit"></span>Manage unavailable</button>
             </div>
           </section>
 
           <section class="grafana-connection-card">
             <span class="grafana-mark">G</span>
-            <div class="grafana-connection-copy"><strong>Grafana</strong><span>Dashboard catalog only in this local build</span></div>
-            <dl class="grafana-connection-meta"><div><dt>Data source</dt><dd>Planned: PostgreSQL · sentinel_db.reporting</dd></div><div><dt>Access</dt><dd>Not deployed</dd></div></dl>
-            <span class="integration-state"><span></span>Planned</span>
+            <div class="grafana-connection-copy" id="grafana-connection-copy"><strong>Grafana</strong><span>Checking Grafana</span></div>
+            <dl class="grafana-connection-meta"><div><dt>Data source</dt><dd id="grafana-data-source">Checking</dd></div><div><dt>Access</dt><dd id="grafana-access">Checking</dd></div></dl>
+            <span class="integration-state" id="grafana-integration-state"><span></span>Checking</span>
           </section>
 
           <section class="grafana-dashboard-grid" id="grafana-dashboard-grid"></section>
@@ -258,7 +258,7 @@
             </div>
           </section>
           <section class="panel settings-panel runtime-settings-panel">
-            <div class="panel-heading"><div><h2>SSH key management</h2><p>SSH key references for manual hosts and collection profiles. Private keys remain outside Sentinel.</p></div><button class="primary-button" id="add-ssh-key-button"><span class="icon" data-icon="plus"></span>Add SSH key</button></div>
+            <div class="panel-heading"><div><h2>SSH key management</h2><p>Generate managed keys or retain external key references for manual hosts and collection profiles. Private keys are never displayed.</p></div><button class="primary-button" id="add-ssh-key-button"><span class="icon" data-icon="plus"></span>Generate SSH key</button></div>
             <div class="ssh-key-list" id="ssh-key-list"></div>
           </section>
           <section class="panel settings-panel runtime-settings-panel">
@@ -412,10 +412,10 @@
         <div class="manager-form-body">
           <div class="form-grid">
             <label class="form-field"><span>Reference name</span><input id="credential-name-input" name="name" type="text" autocomplete="off" required /></label>
-            <label class="form-field"><span>Secret reference</span><input id="credential-reference-input" name="reference" type="text" autocomplete="off" placeholder="secret://sentinel/..." required /></label>
+            <label class="form-field" id="credential-reference-field"><span>Secret reference</span><input id="credential-reference-input" name="reference" type="text" autocomplete="off" placeholder="secret://sentinel/..." required /></label>
           </div>
           <div class="form-grid profile-form-grid">
-            <label class="form-field"><span>Credential type</span><select id="credential-type-input" name="type"></select></label>
+            <label class="form-field" id="credential-type-field"><span>Credential type</span><select id="credential-type-input" name="type"></select></label>
             <label class="form-field"><span>Principal</span><input id="credential-principal-input" name="principal" type="text" autocomplete="off" required /></label>
           </div>
           <div class="form-section-label">Access scope</div>
@@ -426,7 +426,7 @@
           <div class="connection-result" id="credential-form-result" aria-live="polite"></div>
           <p class="form-note">This form records a path reference only. It never reads, displays, or stores the secret value.</p>
         </div>
-        <footer class="dialog-actions"><button class="outline-button" type="button" id="cancel-credential-button">Cancel</button><button class="primary-button" type="submit"><span class="icon" data-icon="check"></span>Save credential</button></footer>
+        <footer class="dialog-actions"><button class="outline-button" type="button" id="cancel-credential-button">Cancel</button><button class="primary-button" type="submit"><span class="icon" data-icon="check"></span><span id="credential-submit-label">Save credential</span></button></footer>
       </form>
     </dialog>
 

@@ -1,19 +1,21 @@
 # Summary API Contract
 
-`GET /api/summary` is the additive reporting handoff for the Sentinel portal
-and the future Grafana catalog. It is computed only from structured tables and
-curated `reporting` views; it never parses the legacy activity display text.
+`GET /api/summary` is the additive operational reporting handoff for the
+Sentinel portal and Grafana catalog. It is computed only from structured tables
+and curated `reporting` views; it never parses legacy activity display text.
 
-The local development build always labels the document `simulation`. It does
-not claim that Sentinel contacted an OLVM manager, SSH target, external secret provider,
-Ansible, Grafana, or any other external service.
+The summary reports accepted collected data and source availability. It uses
+`operational` after a completed live run, `degraded` after a partial,
+unreachable, or failed live run, and `unavailable` before any live run
+completes. Freshness reflects the most recent completed live attempt; it does
+not fabricate target contact or successful collection.
 
 ```json
 {
   "generatedAt": "2026-09-28T10:00:00Z",
   "mode": {
-    "kind": "simulation",
-    "message": "Simulated development data only; no target or external service was contacted."
+    "kind": "operational | degraded | unavailable",
+    "message": "Reporting state derived from accepted collection artifacts."
   },
   "freshness": {
     "state": "fresh | stale | unavailable",
@@ -71,5 +73,5 @@ Ansible, Grafana, or any other external service.
 
 `collections.latest` is `null` and capacity values are zero/null when no
 completed structured run exists. `collections.outcomes.successRate` is `null`
-when no hosts were attempted. A queued simulation is represented in
+when no hosts were attempted. A queued collection is represented in
 `recentActivity` but does not replace the latest completed collection.

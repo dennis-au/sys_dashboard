@@ -8,7 +8,9 @@ playbook source in PostgreSQL.
 
 Only `source.state: "pinned"` is runnable. `migration-pending-review`, draft,
 and unresolved states receive `409` from collection-run and syntax-check APIs.
-The run endpoint remains a local simulation after source gating succeeds.
+After source gating succeeds, Sentinel creates a read-only collection run for
+the approved executor. A run records immutable source provenance and must
+return an explicit unavailable or failed outcome when execution cannot begin.
 
 ## Read And History
 

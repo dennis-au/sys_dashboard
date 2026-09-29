@@ -1,14 +1,28 @@
-# Sentinel Dashboard
+# Sentinel Infrastructure Information And Dashboard
 
-Sentinel is an infrastructure inventory dashboard. The local Docker Desktop stack contains:
+Sentinel gathers read-only infrastructure information, validates and stores it
+with source and playbook provenance, and presents operational inventory,
+collection, freshness, capacity, and alert dashboards. The local Docker
+Desktop stack contains:
 
 - Nginx dashboard at `http://localhost:8080`
 - FastAPI service proxied at `/api/`
 - PostgreSQL `sentinel_db` for local operational data
 - Forgejo, available only to Sentinel's internal API and scheduler worker at
   `http://forgejo:3000`, for the self-hosted `sentinel-playbooks` repository
+- Grafana, available through the Sentinel dashboard at `http://localhost:8080/grafana/`
+  for analytical dashboard composition and display
 
-The browser UI loads and persists hosts, OLVM managers, external secret-reference metadata, collection profiles, run history, and Grafana catalog entries through the API. Sentinel uses internal Forgejo only for Git-owned playbook source and target-free syntax checks. It does not contact OLVM, SSH, an external secret provider, Grafana, or other production infrastructure: connection tests and collection actions are explicit simulations.
+The browser UI manages hosts, OLVM managers, provider-neutral secret references,
+collection profiles, run history, and the live Grafana dashboard catalog through
+the API. Sentinel opens Grafana in a separate browser tab; Grafana remains the
+only owner of dashboard composition, panels, and query layout.
+Sentinel uses internal Forgejo for Git-owned playbook source and syntax checks.
+Production collection is read-only: an enabled source adapter resolves a scoped
+secret reference only at runtime, gathers typed facts, and writes validated
+artifacts and reporting projections. A developer stack without configured
+source adapters must report unavailable sources or no collected data; it must
+not fabricate successful collection results.
 
 ## Production Deployment
 
@@ -27,9 +41,9 @@ backup expectations, password rotation, and operational commands.
 
 Each OLVM-owned host records its configured manager ID, immutable Engine resource type and ID, last authoritative run ID, and reconciliation state. PostgreSQL enforces one host per `(sourceManagerId, engineResourceType, engineResourceId)` through `sentinel.olvm_host_identities`; display names and management addresses remain renameable attributes and cannot become an ownership key.
 
-Legacy OLVM records that cannot be mapped deterministically remain `legacy-unresolved` and render an actionable provenance state in the portal; Sentinel does not assign a guessed manager. Manual hosts remain outside the OLVM identity table, and a future OLVM reconciliation must reject, never overwrite, a manual name or address collision.
+Legacy OLVM records that cannot be mapped deterministically remain `legacy-unresolved` and render an actionable provenance state in the portal; Sentinel does not assign a guessed manager. Manual hosts remain outside the OLVM identity table, and OLVM reconciliation must reject, never overwrite, a manual name or address collision.
 
-Missing authoritative runs do not remove a host. The internal reconciliation model records `missing` state first, reaches `retained` only after the configured threshold, and marks a resource `pending-prune` only when a caller explicitly requests pruning. No live collector or pruning route is enabled in this build.
+Missing authoritative runs do not remove a host. The reconciliation model records `missing` state first, reaches `retained` only after the configured threshold, and marks a resource `pending-prune` only when a caller explicitly requests pruning. Collection adapters must never prune on a partial or failed source run.
 
 ## Playbook Repository
 
@@ -38,6 +52,19 @@ Forgejo is the internal self-hosted Git service for playbook source. It has no h
 On a fresh `forgejo-data` volume, `forgejo-bootstrap` locks Forgejo installation, creates the internal non-admin `sentinel` repository owner, and creates the private `sentinel-playbooks` repository with a `main` branch. No browser-based installation or administrator setup is required. The bootstrap uses a runtime-only random password and does not write it to Compose, logs, or the repository.
 
 The dashboard and API share the `application` network so browser requests to `/api/` continue to work. PostgreSQL and Forgejo each use separate internal networks that have the API as their only common service.
+
+## Grafana Integration
+
+Grafana reads `sentinel_db.reporting` through the `grafana_reader` role, which
+has `SELECT` access only to that schema. Grafana keeps its own configuration in
+the separate `grafana_db` database. It has no direct host port in Sentinel's
+Compose configuration: Nginx serves it at `/grafana/` alongside the portal.
+
+`grafana-bootstrap` creates a Grafana Viewer service account and stores its
+token only in the Docker-managed `grafana-service-credentials` volume. The
+Sentinel API uses that token only for Grafana health and dashboard-catalog
+reads. It cannot create, edit, or delete Grafana dashboards and never returns
+the token to the browser, PostgreSQL, logs, audit exports, or diagnostics.
 
 Forgejo data, including its SQLite database and Git repositories, is stored in the Docker-managed `forgejo-data` volume. Embedded SSH is disabled. The API reads its narrowly scoped service token from the internal secret mount only when it checks Forgejo readiness or resolves Git-owned playbook metadata. `GET /api/integrations/forgejo/readiness` verifies Forgejo health and authenticated access to the prepared private repository; it never returns credential material.
 
@@ -69,7 +96,7 @@ Open `http://localhost:8080`.
 
 The HTML, CSS, and JavaScript are bind-mounted into the dashboard container. Refresh the browser after editing any of those files. Rebuild the stack after changing backend code, dependencies, Dockerfiles, Nginx, or Compose configuration.
 
-A new PostgreSQL volume starts empty: no hosts, managers, credential references, profiles, dashboards, alerts, runs, or generated playbooks are inserted. Start by recording an external secret reference, then add an OLVM manager or a manual host. Actions remain clearly labelled simulations and do not contact target infrastructure.
+A new PostgreSQL volume starts empty: no hosts, managers, credential references, profiles, dashboards, alerts, runs, or generated playbooks are inserted. Start by recording a provider-neutral `secret://sentinel/...` reference, then add an OLVM manager or a manual host. For Docker Desktop development, create the matching untracked JSON material below `./secrets/`; production uses `.sentinel-production/secrets/`. Live OLVM and SSH calls return an explicit unavailable or failed result when that runtime material or the approved target route is absent. The Docker Desktop stack is for development; use approved non-production targets for integration testing.
 
 ## Internal Audit Mode
 
@@ -85,13 +112,18 @@ The browser export is a download only; the portal never renders audit event cont
 
 ## Regression tests
 
-Run the API regression suite against the Docker services:
+Run the API regression suite in an isolated, disposable Docker project:
 
 ```sh
-docker compose exec -T api pytest -q
+./scripts/test-isolated
 ```
 
-The suite covers empty bootstrap behavior, manual-host validation and persistence, external-secret-reference cascades, Git-pinned profile metadata, source-resolution failures, byte-preserving migration staging and finalization, OLVM provenance and reconciliation collision rules, artifact ingestion replay and rollback, scheduler ownership, playbook syntax checks, and simulated manager/profile actions. Browser regression should additionally verify a create/edit action survives a reload and that the browser console is clean.
+Do not run the stateful API suite against an installed Sentinel stack with
+`docker compose exec api pytest`: several contracts intentionally assert an
+empty database. `scripts/test-isolated` uses separate containers and volumes,
+then removes them when the command exits.
+
+The suite covers empty bootstrap behavior, manual-host validation and persistence, secret-reference cascades, the read-only Grafana catalog client, Git-pinned profile metadata, source-resolution failures, byte-preserving migration staging and finalization, OLVM provenance and reconciliation collision rules, artifact ingestion replay and rollback, scheduler ownership, playbook syntax checks, and manager/profile workflow behavior. Browser regression should additionally verify a create/edit action survives a reload and that the browser console is clean.
 
 The Forgejo client unit suite uses a mocked Forgejo transport and runs with the standard command. The readiness endpoint has been verified against the local prepared private repository, including a denied anonymous repository read.
 

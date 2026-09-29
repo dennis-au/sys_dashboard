@@ -14,6 +14,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from sentinel.credentials import migrate_legacy_secret_references
+from sentinel.ssh_keys import remove_managed_ssh_key
 
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000")
@@ -93,14 +94,13 @@ def test_health_and_bootstrap_starts_empty(client: httpx.Client):
     bootstrap = client.get("/api/bootstrap")
     assert bootstrap.status_code == 200
     data = bootstrap.json()
-    assert data == {
-        "hosts": [],
-        "runs": [],
-        "credentials": [],
-        "managers": [],
-        "collectionProfiles": [],
-        "grafanaDashboards": [],
-    }
+    assert data["hosts"] == []
+    assert data["runs"] == []
+    assert data["credentials"] == []
+    assert data["managers"] == []
+    assert data["collectionProfiles"] == []
+    assert data["grafana"]["state"] in {"ready", "unavailable"}
+    assert isinstance(data["grafanaDashboards"], list)
     assert client.post("/api/collections/run").status_code == 409
     assert client.post("/api/managers/sync-all").status_code == 409
 
@@ -129,8 +129,8 @@ def test_summary_reports_an_empty_operational_state(client: httpx.Client):
 
     assert response.status_code == 200
     summary = response.json()
-    assert summary["mode"]["kind"] == "simulation"
-    assert "no target or external service was contacted" in summary["mode"]["message"]
+    assert summary["mode"]["kind"] == "unavailable"
+    assert summary["mode"]["message"] == "No completed live collection is available."
     assert set(summary) == {
         "generatedAt",
         "mode",
@@ -186,7 +186,7 @@ def test_manual_host_crud_and_collision_rejection(client: httpx.Client):
     assert updated.json()["ip"] == "198.51.100.250"
 
 
-def test_reference_cascade_profiles_and_simulated_actions(client: httpx.Client):
+def test_reference_cascade_profiles_and_live_action_gates(client: httpx.Client):
     suffix = uuid.uuid4().hex[:8]
     credential_id, reference = create_ssh_key(client, suffix)
     credential = {
@@ -259,19 +259,18 @@ def test_reference_cascade_profiles_and_simulated_actions(client: httpx.Client):
     )
     assert created_host.status_code == 201
 
-    assert client.post(f"/api/managers/{manager_id}/test").json()["mode"] == "simulation"
-    assert client.post(f"/api/managers/{manager_id}/sync").json()["mode"] == "simulation"
+    manager_test = client.post(f"/api/managers/{manager_id}/test")
+    assert manager_test.status_code == 503
+    assert "secret is unavailable" in manager_test.json()["detail"]
+    manager_sync = client.post(f"/api/managers/{manager_id}/sync")
+    assert manager_sync.status_code == 503
+    assert "secret is unavailable" in manager_sync.json()["detail"]
     blocked_profile_run = client.post(f"/api/profiles/{blocked_profile_id}/run")
     assert blocked_profile_run.status_code == 409
     assert "awaiting Git review" in blocked_profile_run.json()["detail"]
     collection_run = client.post("/api/collections/run")
-    assert collection_run.status_code == 200
-    assert collection_run.json()["mode"] == "simulation"
-    summary = client.get("/api/summary").json()
-    queued = next(item for item in summary["recentActivity"] if item["name"] == "Simulated inventory collection")
-    assert queued["state"] == "queued"
-    assert queued["mode"] == "simulation"
-    delete_run(queued["runId"])
+    assert collection_run.status_code == 409
+    assert "reviewed Git revision" in collection_run.json()["detail"]
 
 
 def test_ssh_key_references_are_managed_only_from_settings(client: httpx.Client):
@@ -292,6 +291,58 @@ def test_ssh_key_references_are_managed_only_from_settings(client: httpx.Client)
     created = client.post("/api/settings/ssh-keys", json=payload)
     assert created.status_code == 201
     assert created.json()["type"] == "SSH key"
+
+
+def test_managed_ssh_key_generation_exposes_only_public_material(client: httpx.Client):
+    suffix = uuid.uuid4().hex[:8]
+    created = client.post(
+        "/api/settings/ssh-keys/generate",
+        json={
+            "name": f"regression-managed-ssh-{suffix}",
+            "principal": "ansible",
+            "scope": "Regression targets",
+            "state": "active",
+        },
+    )
+
+    assert created.status_code == 201
+    record = created.json()
+    try:
+        assert record["reference"].startswith("secret://sentinel/managed-ssh/")
+        assert record["managedBy"] == "sentinel"
+        assert record["keyAlgorithm"] == "ed25519"
+        assert record["publicKey"].startswith("ssh-ed25519 ")
+        assert record["fingerprint"].startswith("SHA256:")
+        assert "PRIVATE KEY" not in created.text
+        assert "privateKey" not in record
+
+        bootstrap = client.get("/api/bootstrap")
+        assert bootstrap.status_code == 200
+        persisted = next(item for item in bootstrap.json()["credentials"] if item["id"] == record["id"])
+        assert persisted["publicKey"] == record["publicKey"]
+        assert "privateKey" not in persisted
+
+        blocked_reference_change = client.put(
+            f"/api/settings/ssh-keys/{record['id']}",
+            json={
+                **record,
+                "reference": "secret://sentinel/managed-ssh/replaced",
+            },
+        )
+        assert blocked_reference_change.status_code == 422
+
+        updated = client.put(
+            f"/api/settings/ssh-keys/{record['id']}",
+            json={
+                **record,
+                "scope": "Updated regression targets",
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["reference"] == record["reference"]
+        assert updated.json()["publicKey"] == record["publicKey"]
+    finally:
+        remove_managed_ssh_key(record["reference"])
 
 
 def test_legacy_secret_references_are_migrated_to_provider_neutral_uris():

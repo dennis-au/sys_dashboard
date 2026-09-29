@@ -3,7 +3,7 @@ from typing import Any
 from uuid import uuid4
 
 from .records import records, store_record
-from .reporting import record_simulated_collection
+from .reporting import reserve_live_collection
 
 
 def basic_playbook_issues(source: str) -> list[str]:
@@ -30,60 +30,77 @@ def create_run(
     *,
     collection_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Record the legacy activity item plus an honest queued simulation record."""
+    """Record a queued live run before a worker contacts a configured source."""
 
+    context = collection_context or {}
     record = {
         "id": f"run-{uuid4().hex}",
         "name": name,
         "date": "Just now",
         "summary": summary,
-        "status": "Completed",
+        "status": "Queued",
         "type": run_type,
     }
+    expected_sources = context.get("expected_source_instances")
+    if isinstance(expected_sources, list):
+        # This is source identity metadata, not credentials or source content.
+        # The authoritative copy is in collection_run_details.metadata.
+        record["expectedSourceInstances"] = expected_sources
     store_record("runs", record)
-    record_simulated_collection(record, **(collection_context or {}))
+    reserve_live_collection(record, **context)
     return record
 
 
-def queue_profile_run(profile: dict[str, Any], *, trigger: str = "manual") -> dict[str, Any]:
-    """Queue the current safe simulation after its caller has enforced Git gating."""
+def queue_profile_run(
+    profile: dict[str, Any], *, trigger: str = "manual", hosts: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Reserve a runnable profile for the worker-owned live execution boundary."""
 
     scheduled = trigger == "schedule"
-    profile["lastRun"] = "Scheduled simulation queued" if scheduled else "Manual simulation queued"
+    profile["lastRun"] = "Scheduled collection queued" if scheduled else "Manual collection queued"
     store_record("profiles", profile)
-    expected_source_instances = _expected_source_instances(profile)
+    target_hosts = list(hosts) if hosts is not None else _target_hosts(profile)
+    expected_source_instances = _expected_source_instances(profile, target_hosts)
     name = f"{'Scheduled' if scheduled else 'Manual'} collection: {profile['name']}"
-    summary = f"{'Scheduled' if scheduled else 'Manual'} profile run accepted - no target contacted"
+    summary = f"{'Scheduled' if scheduled else 'Manual'} profile run queued for worker execution"
     run = create_run(
         name,
         summary,
         collection_context={
             "profile": profile,
+            "hosts": target_hosts,
             "source_type": "profile",
             "trigger": trigger,
             "expected_source_instances": expected_source_instances,
         },
     )
-    return {"profile": profile, **simulated_result(f"collection run for {profile['name']}"), "run": run}
+    return {
+        "profile": profile,
+        "run": run,
+        "mode": "live",
+        "message": f"Queued collection run for {profile['name']}. The Sentinel worker will execute it.",
+    }
 
 
-def _expected_source_instances(profile: dict[str, Any]) -> list[dict[str, str]]:
+def _target_hosts(profile: dict[str, Any]) -> list[dict[str, Any]]:
     """Resolve target ownership from Sentinel records, never a static inventory group."""
 
     playbook = str(profile.get("playbook", "")).lower()
     if "olvm" in playbook:
-        return [{"type": "olvm", "id": str(manager["id"])} for manager in records("managers")]
+        return []
     manual_scope = "manual" in str(profile.get("scope", "")).lower()
     return [
-        {"type": "linux", "id": str(host["name"])}
+        host
         for host in records("hosts")
         if host.get("lifecycle", "active") == "active"
         and (not manual_scope or host.get("sourceType") == "manual")
     ]
 
 
-def simulated_result(subject: str) -> dict[str, str]:
-    return {
-        "mode": "simulation",
-        "message": f"Simulated {subject}. No infrastructure was contacted.",
-    }
+def _expected_source_instances(profile: dict[str, Any], hosts: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Bind Linux sources to Sentinel host IDs and OLVM profiles to manager IDs."""
+
+    playbook = str(profile.get("playbook", "")).lower()
+    if "olvm" in playbook:
+        return [{"type": "olvm", "id": str(manager["id"])} for manager in records("managers")]
+    return [{"type": "linux", "id": str(host["name"])} for host in hosts]

@@ -15,6 +15,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from sentinel.artifacts import ArtifactStorageError, read_sanitized_artifact, write_sanitized_artifact
+from sentinel.bootstrap import initialize_database
 from sentinel.execution import prepare_sanitized_artifact
 from sentinel.facts import FactContractError, deterministic_record_key, validate_fact_record
 from sentinel import ingestion
@@ -28,7 +29,7 @@ SHA = "a" * 40
 SOURCE_ID = "ingestion-regression-host"
 
 
-def filesystem_record(*, run_id: str = RUN_ID, payload: dict | None = None) -> dict:
+def filesystem_record(*, run_id: str = RUN_ID, payload: dict | None = None, sequence: int = 1) -> dict:
     values = {
         "mountPath": "/",
         "filesystemType": "ext4",
@@ -41,7 +42,7 @@ def filesystem_record(*, run_id: str = RUN_ID, payload: dict | None = None) -> d
         "schemaVersion": 1,
         "recordType": "linux.filesystem_snapshot.v1",
         "runId": run_id,
-        "sequence": 1,
+        "sequence": sequence,
         "collectedAt": NOW,
         "observedAt": NOW,
         "source": {"type": "linux", "id": SOURCE_ID},
@@ -63,7 +64,74 @@ def filesystem_record(*, run_id: str = RUN_ID, payload: dict | None = None) -> d
     }
 
 
+def capacity_record(*, run_id: str = RUN_ID, sequence: int = 2) -> dict:
+    observed_at = NOW
+    return {
+        "schemaVersion": 1,
+        "recordType": "linux.capacity_snapshot.v1",
+        "runId": run_id,
+        "sequence": sequence,
+        "collectedAt": observed_at,
+        "observedAt": observed_at,
+        "source": {"type": "linux", "id": SOURCE_ID},
+        "resource": {"kind": "host_capacity", "id": "system", "displayName": SOURCE_ID},
+        "payload": {
+            "cpuCores": 4,
+            "memoryTotalBytes": 1000,
+            "memoryUsedBytes": 400,
+            "diskTotalBytes": 2000,
+            "diskUsedBytes": 900,
+        },
+        "provenance": {
+            "collector": "sentinel-test",
+            "playbookPath": "inventory/linux-facts.yml",
+            "playbookCommitSha": SHA,
+        },
+        "recordKey": deterministic_record_key(
+            record_type="linux.capacity_snapshot.v1",
+            source_type="linux",
+            source_id=SOURCE_ID,
+            resource_kind="host_capacity",
+            resource_id="system",
+            observed_at=observed_at,
+        ),
+    }
+
+
+def system_record(*, run_id: str = RUN_ID) -> dict:
+    return {
+        "schemaVersion": 1,
+        "recordType": "linux.system_fact.v1",
+        "runId": run_id,
+        "sequence": 1,
+        "collectedAt": NOW,
+        "observedAt": NOW,
+        "source": {"type": "linux", "id": SOURCE_ID},
+        "resource": {"kind": "host_system", "id": "system", "displayName": "integration-host"},
+        "payload": {
+            "hostname": "integration-host",
+            "osFamily": "RedHat",
+            "distribution": "CentOS",
+            "distributionVersion": "9",
+            "kernel": "5.14.0",
+            "architecture": "x86_64",
+        },
+        "provenance": {
+            "collector": "sentinel-test",
+            "playbookPath": "inventory/linux-facts.yml",
+            "playbookCommitSha": SHA,
+        },
+        "recordKey": deterministic_record_key(
+            record_type="linux.system_fact.v1",
+            source_type="linux",
+            source_id=SOURCE_ID,
+            resource_kind="host_system",
+            resource_id="system",
+            observed_at=NOW,
+        ),
+    }
 def insert_artifact_run(*, expected_sources=None) -> None:
+    initialize_database()
     with psycopg.connect(DATABASE_URL, autocommit=True) as connection, connection.cursor() as cursor:
         cursor.execute("DELETE FROM sentinel.hosts WHERE id = %s", (SOURCE_ID,))
         cursor.execute(
@@ -86,6 +154,8 @@ def insert_artifact_run(*, expected_sources=None) -> None:
         cursor.execute("DELETE FROM sentinel.collection_artifact_receipts WHERE run_id = %s", (RUN_ID,))
         cursor.execute("DELETE FROM sentinel.linux_filesystem_current WHERE run_id = %s", (RUN_ID,))
         cursor.execute("DELETE FROM sentinel.linux_filesystem_snapshots WHERE run_id = %s", (RUN_ID,))
+        cursor.execute("DELETE FROM sentinel.linux_system_current WHERE run_id = %s", (RUN_ID,))
+        cursor.execute("DELETE FROM sentinel.host_capacity_facts WHERE run_id = %s", (RUN_ID,))
         cursor.execute("DELETE FROM sentinel.collection_run_details WHERE run_id = %s", (RUN_ID,))
         cursor.execute(
             """
@@ -110,6 +180,8 @@ def artifact_run():
         cursor.execute("DELETE FROM sentinel.collection_artifact_receipts WHERE run_id = %s", (RUN_ID,))
         cursor.execute("DELETE FROM sentinel.linux_filesystem_current WHERE run_id = %s", (RUN_ID,))
         cursor.execute("DELETE FROM sentinel.linux_filesystem_snapshots WHERE run_id = %s", (RUN_ID,))
+        cursor.execute("DELETE FROM sentinel.linux_system_current WHERE run_id = %s", (RUN_ID,))
+        cursor.execute("DELETE FROM sentinel.host_capacity_facts WHERE run_id = %s", (RUN_ID,))
         cursor.execute("DELETE FROM sentinel.collection_run_details WHERE run_id = %s", (RUN_ID,))
         cursor.execute("DELETE FROM sentinel.hosts WHERE id = %s", (SOURCE_ID,))
 
@@ -117,7 +189,7 @@ def artifact_run():
 def test_linux_artifact_is_projected_once_and_replay_is_harmless():
     artifact = prepare_sanitized_artifact(
         run_id=RUN_ID,
-        records=[filesystem_record()],
+        records=[system_record(), filesystem_record(sequence=2), capacity_record(sequence=3)],
         source_instances=[{"type": "linux", "id": SOURCE_ID}],
         collector_version="sentinel-test",
         location=f"{RUN_ID}/facts.ndjson.gz",
@@ -132,7 +204,7 @@ def test_linux_artifact_is_projected_once_and_replay_is_harmless():
     replay = ingest_ndjson_artifact(artifact.manifest, artifact.ndjson)
 
     assert accepted.state == "accepted"
-    assert accepted.accepted_records == 1
+    assert accepted.accepted_records == 3
     assert accepted.replayed is False
     assert replay.receipt_id == accepted.receipt_id
     assert replay.replayed is True
@@ -145,7 +217,25 @@ def test_linux_artifact_is_projected_once_and_replay_is_harmless():
         )
         assert cursor.fetchone() == ("/", 1000, 400, 600)
         cursor.execute("SELECT COUNT(*) FROM sentinel.collection_artifact_ledger WHERE run_id = %s", (RUN_ID,))
-        assert cursor.fetchone()[0] == 1
+        assert cursor.fetchone()[0] == 3
+        cursor.execute(
+            """
+            SELECT hostname, distribution, distribution_version, kernel, architecture
+            FROM reporting.linux_system_current
+            WHERE run_id = %s
+            """,
+            (RUN_ID,),
+        )
+        assert cursor.fetchone() == ("integration-host", "CentOS", "9", "5.14.0", "x86_64")
+        cursor.execute(
+            """
+            SELECT cpu_cores, memory_total_bytes, memory_used_bytes, disk_total_bytes, disk_used_bytes
+            FROM sentinel.host_capacity_facts
+            WHERE run_id = %s
+            """,
+            (RUN_ID,),
+        )
+        assert cursor.fetchone() == (4, 1000, 400, 2000, 900)
 
 
 def test_invalid_secret_bearing_record_is_quarantined_without_a_projection():

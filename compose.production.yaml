@@ -19,12 +19,21 @@ x-backend: &backend
     DATABASE_USER: ${POSTGRES_USER:-sentinel}
     DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
     FORGEJO_API_TOKEN_FILE: /run/forgejo-service-credentials/forgejo_api_token
+    SENTINEL_SECRET_DIRECTORY: /run/sentinel-secrets
+    SENTINEL_MANAGED_SSH_KEY_DIRECTORY: /var/lib/sentinel/managed-ssh
+    SENTINEL_ARTIFACT_DIRECTORY: /var/lib/sentinel/artifacts
+    SENTINEL_SSH_KNOWN_HOSTS_FILE: /run/sentinel-secrets/known_hosts
+    GRAFANA_URL: http://grafana:3000
+    GRAFANA_PUBLIC_URL: /grafana
+    GRAFANA_API_TOKEN_FILE: /run/grafana-service-credentials/grafana_api_token
     HOME: /tmp
     XDG_CACHE_HOME: /tmp/.cache
   secrets:
     - postgres_password
   volumes:
     - forgejo-service-credentials:/run/forgejo-service-credentials:ro
+    - ${SENTINEL_RUNTIME_DIR:?Run scripts/deploy-production first}/secrets:/run/sentinel-secrets:ro
+    - grafana-service-credentials:/run/grafana-service-credentials:ro
   read_only: true
   tmpfs:
     - /tmp
@@ -63,10 +72,18 @@ services:
         condition: service_healthy
       forgejo-bootstrap:
         condition: service_completed_successfully
+      sentinel-managed-ssh-init:
+        condition: service_completed_successfully
     networks:
       - application
       - database
       - playbooks
+      - collection
+    volumes:
+      - forgejo-service-credentials:/run/forgejo-service-credentials:ro
+      - ${SENTINEL_RUNTIME_DIR:?Run scripts/deploy-production first}/secrets:/run/sentinel-secrets:ro
+      - sentinel-managed-ssh:/var/lib/sentinel/managed-ssh
+      - grafana-service-credentials:/run/grafana-service-credentials:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2).read()"]
       interval: 10s
@@ -83,9 +100,49 @@ services:
         condition: service_healthy
       forgejo-bootstrap:
         condition: service_completed_successfully
+      sentinel-storage-init:
+        condition: service_completed_successfully
+      sentinel-managed-ssh-init:
+        condition: service_completed_successfully
     networks:
       - database
       - playbooks
+      - collection
+    volumes:
+      - forgejo-service-credentials:/run/forgejo-service-credentials:ro
+      - ${SENTINEL_RUNTIME_DIR:?Run scripts/deploy-production first}/secrets:/run/sentinel-secrets:ro
+      - sentinel-managed-ssh:/var/lib/sentinel/managed-ssh:ro
+      - sentinel-artifacts:/var/lib/sentinel/artifacts
+      - grafana-service-credentials:/run/grafana-service-credentials:ro
+
+  sentinel-storage-init:
+    image: alpine:3.22
+    user: "0:0"
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /var/lib/sentinel/artifacts
+        chown -R 1000:1000 /var/lib/sentinel
+        chmod 700 /var/lib/sentinel /var/lib/sentinel/artifacts
+    volumes:
+      - sentinel-artifacts:/var/lib/sentinel/artifacts
+    restart: "no"
+    logging: *log-options
+
+  sentinel-managed-ssh-init:
+    image: alpine:3.22
+    user: "0:0"
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        chown 1000:1000 /var/lib/sentinel/managed-ssh
+        chmod 700 /var/lib/sentinel/managed-ssh
+    volumes:
+      - sentinel-managed-ssh:/var/lib/sentinel/managed-ssh
+    restart: "no"
+    logging: *log-options
 
   forgejo:
     image: codeberg.org/forgejo/forgejo:16.0.5-rootless
@@ -156,6 +213,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      grafana-bootstrap:
+        condition: service_completed_successfully
     networks:
       - application
     read_only: true
@@ -194,6 +253,120 @@ services:
       - NET_BIND_SERVICE
     logging: *log-options
 
+  # Grafana owns dashboard composition. It is reachable through the dashboard
+  # reverse proxy only; the host does not publish Grafana's native port.
+  grafana-db-init:
+    image: postgres:17-alpine
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-sentinel_db}
+      PGUSER: ${POSTGRES_USER:-sentinel}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      GRAFANA_CONFIG_DB_PASSWORD: ${GRAFANA_CONFIG_DB_PASSWORD:-${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}}
+      GRAFANA_REPORTING_DB_PASSWORD: ${GRAFANA_REPORTING_DB_PASSWORD:-${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}}
+    depends_on:
+      api:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        until psql -Atqc "SELECT to_regclass('reporting.collection_runs') IS NOT NULL" | grep -qx t; do sleep 2; done
+        if psql -d postgres -Atqc "SELECT 1 FROM pg_roles WHERE rolname = 'grafana_config'" | grep -qx 1; then
+          psql -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE grafana_config LOGIN PASSWORD '$$GRAFANA_CONFIG_DB_PASSWORD';"
+        else
+          psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE grafana_config LOGIN PASSWORD '$$GRAFANA_CONFIG_DB_PASSWORD';"
+        fi
+        if ! psql -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname = 'grafana_db'" | grep -qx 1; then
+          psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE grafana_db OWNER grafana_config;"
+        fi
+        if psql -Atqc "SELECT 1 FROM pg_roles WHERE rolname = 'grafana_reader'" | grep -qx 1; then
+          psql -v ON_ERROR_STOP=1 -c "ALTER ROLE grafana_reader LOGIN PASSWORD '$$GRAFANA_REPORTING_DB_PASSWORD';"
+        else
+          psql -v ON_ERROR_STOP=1 -c "CREATE ROLE grafana_reader LOGIN PASSWORD '$$GRAFANA_REPORTING_DB_PASSWORD';"
+        fi
+        psql -v ON_ERROR_STOP=1 <<'SQL'
+        GRANT CONNECT ON DATABASE sentinel_db TO grafana_reader;
+        GRANT USAGE ON SCHEMA reporting TO grafana_reader;
+        GRANT SELECT ON ALL TABLES IN SCHEMA reporting TO grafana_reader;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA reporting GRANT SELECT ON TABLES TO grafana_reader;
+        SQL
+    networks:
+      - database
+    restart: "no"
+    logging: *log-options
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in deployment.env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_DATABASE_TYPE: postgres
+      GF_DATABASE_HOST: postgres:5432
+      GF_DATABASE_NAME: grafana_db
+      GF_DATABASE_USER: grafana_config
+      GF_DATABASE_PASSWORD: ${GRAFANA_CONFIG_DB_PASSWORD:?Set GRAFANA_CONFIG_DB_PASSWORD in deployment.env}
+      GF_DATABASE_SSL_MODE: disable
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-https://${SENTINEL_DOMAIN}/grafana/}
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    depends_on:
+      grafana-db-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - application
+      - database
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    restart: unless-stopped
+    logging: *log-options
+
+  grafana-credentials-init:
+    image: alpine:3.22
+    user: "0:0"
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /run/grafana-service-credentials
+        chown 1000:1000 /run/grafana-service-credentials
+        chmod 700 /run/grafana-service-credentials
+    volumes:
+      - grafana-service-credentials:/run/grafana-service-credentials
+    restart: "no"
+    logging: *log-options
+
+  grafana-bootstrap:
+    image: sentinel-grafana-bootstrap:${SENTINEL_IMAGE_TAG:-production}
+    build:
+      context: ./grafana
+    user: "1000:1000"
+    entrypoint: ["/bootstrap/bootstrap.sh"]
+    environment:
+      GRAFANA_URL: http://grafana:3000
+      GRAFANA_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GRAFANA_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in deployment.env}
+      GRAFANA_API_TOKEN_FILE: /run/grafana-service-credentials/grafana_api_token
+    depends_on:
+      grafana:
+        condition: service_healthy
+      grafana-credentials-init:
+        condition: service_completed_successfully
+    volumes:
+      - grafana-service-credentials:/run/grafana-service-credentials
+    networks:
+      - application
+    restart: "no"
+    logging: *log-options
+
 secrets:
   postgres_password:
     file: ${SENTINEL_RUNTIME_DIR:?Run scripts/deploy-production first}/postgres_password
@@ -202,6 +375,10 @@ volumes:
   sentinel-postgres-data:
   forgejo-data:
   forgejo-service-credentials:
+  sentinel-artifacts:
+  sentinel-managed-ssh:
+  grafana-data:
+  grafana-service-credentials:
   caddy-data:
   caddy-config:
 
@@ -211,3 +388,4 @@ networks:
     internal: true
   playbooks:
     internal: true
+  collection:

@@ -8,6 +8,8 @@ let credentials = [];
 
 let grafanaDashboards = [];
 
+let grafanaIntegration = { state: "loading", message: "Checking Grafana", url: null, version: null };
+
 let managers = [];
 
 let internalAuditSettings = { enabled: false, loaded: false };
@@ -181,6 +183,7 @@ function applyBackendState(data) {
   managers = data.managers || [];
   collectionProfiles = data.collectionProfiles || [];
   grafanaDashboards = data.grafanaDashboards || [];
+  grafanaIntegration = data.grafana || { state: "unavailable", message: "Grafana is unavailable.", url: null, version: null };
   Object.keys(playbookGitModels).forEach((key) => delete playbookGitModels[key]);
 }
 
@@ -613,12 +616,45 @@ function credentialRow(credential) {
     </article>`;
 }
 
+function isManagedSshKey(credential) {
+  return isSshKeyCredential(credential) && credential?.managedBy === "sentinel";
+}
+
+function sshKeyRow(credential) {
+  const state = credentialStateName[credential.state] || "Active";
+  const usageCount = credentialUsageCount(credential);
+  const managed = isManagedSshKey(credential);
+  const publicKey = String(credential.publicKey || "");
+  const descriptor = managed ? "Sentinel managed" : "External reference";
+  const publicKeyDisplay = publicKey
+    ? `<div class="ssh-public-key"><span>Public key</span><code>${escapeHtml(publicKey)}</code><button class="icon-button subtle ssh-key-copy-button" type="button" data-ssh-public-key="${escapeHtml(publicKey)}" aria-label="Copy public key for ${escapeHtml(credential.name)}" title="Copy public key">${icon("copy")}</button></div>`
+    : `<p class="ssh-public-key-unavailable">Public key is not available for this external secret reference.</p>`;
+  return `
+    <article class="credential-row ssh-key-row">
+      <span class="credential-icon">${icon("key")}</span>
+      <div class="credential-main">
+        <div class="credential-title"><strong>${escapeHtml(credential.name)}</strong><span class="credential-state ${credential.state}">${state}</span></div>
+        <span class="ssh-key-origin">${escapeHtml(descriptor)}</span>
+        ${publicKeyDisplay}
+        <dl class="credential-meta">
+          <div><dt>Algorithm</dt><dd>${escapeHtml(credential.keyAlgorithm || "Not reported")}</dd></div>
+          <div><dt>Fingerprint</dt><dd>${escapeHtml(credential.fingerprint || "Not reported")}</dd></div>
+          <div><dt>Principal</dt><dd>${escapeHtml(credential.principal)}</dd></div>
+          <div><dt>Scope</dt><dd>${escapeHtml(credential.scope)}</dd></div>
+          <div><dt>Used by</dt><dd>${usageCount} ${usageCount === 1 ? "reference" : "references"}</dd></div>
+        </dl>
+      </div>
+      <div class="credential-activity"><span>Last used</span><strong>${escapeHtml(credential.lastUsed)}</strong></div>
+      <button class="icon-button subtle credential-edit-button" data-credential-edit="${credential.id}" aria-label="Edit ${escapeHtml(credential.name)}" title="Edit SSH key settings">${icon("edit")}</button>
+    </article>`;
+}
+
 function renderCredentials() {
   const serviceCredentials = credentials.filter((credential) => !isSshKeyCredential(credential));
   const sshKeys = credentials.filter(isSshKeyCredential);
   document.querySelector("#credential-count").textContent = serviceCredentials.length;
   document.querySelector("#credential-list").innerHTML = serviceCredentials.map(credentialRow).join("") || '<div class="empty-state">No service credential references are configured.</div>';
-  document.querySelector("#ssh-key-list").innerHTML = sshKeys.map(credentialRow).join("") || '<div class="empty-state">No SSH key references are configured.</div>';
+  document.querySelector("#ssh-key-list").innerHTML = sshKeys.map(sshKeyRow).join("") || '<div class="empty-state">No SSH keys are configured. Generate a managed key to add one.</div>';
   renderCredentialOptions();
 }
 
@@ -627,7 +663,7 @@ function updateActionAvailability() {
   const hasManagers = managers.length > 0;
   document.querySelectorAll("#collect-button, #collection-list-button").forEach((button) => {
     button.disabled = !hasActiveHosts;
-    button.title = hasActiveHosts ? "Run a simulated collection" : "Add an active host before running a collection";
+    button.title = hasActiveHosts ? "Queue a live collection with an enabled reviewed profile" : "Add an active host before running a collection";
   });
   const syncAllButton = document.querySelector("#sync-all-button");
   syncAllButton.disabled = !hasManagers;
@@ -635,18 +671,52 @@ function updateActionAvailability() {
 }
 
 function renderGrafanaDashboards() {
+  const openButton = document.querySelector("#open-grafana-button");
+  const builderButton = document.querySelector("#open-grafana-builder-button");
+  const copy = document.querySelector("#grafana-connection-copy");
+  const dataSource = document.querySelector("#grafana-data-source");
+  const access = document.querySelector("#grafana-access");
+  const state = document.querySelector("#grafana-integration-state");
+  const ready = grafanaIntegration.state === "ready" && Boolean(grafanaIntegration.url);
+  if (openButton) {
+    openButton.disabled = !ready;
+    openButton.textContent = ready ? "Open Grafana" : "Grafana unavailable";
+    openButton.insertAdjacentHTML("afterbegin", icon("arrow-right"));
+    openButton.title = ready ? "Open the Grafana workspace" : grafanaIntegration.message;
+  }
+  if (builderButton) {
+    builderButton.disabled = !ready;
+    builderButton.textContent = ready ? "Manage in Grafana" : "Manage unavailable";
+    builderButton.insertAdjacentHTML("afterbegin", icon("edit"));
+    builderButton.title = ready ? "Open Grafana to create or edit dashboards" : grafanaIntegration.message;
+  }
+  if (copy) copy.querySelector("span:last-child").textContent = ready ? "Connected dashboard catalog" : grafanaIntegration.message;
+  if (dataSource) dataSource.textContent = ready ? "PostgreSQL · sentinel_db.reporting" : "Unavailable";
+  if (access) access.textContent = ready ? `Read-only reporting · Grafana ${grafanaIntegration.version || "connected"}` : "Not connected";
+  if (state) {
+    state.className = `integration-state ${ready ? "ready" : ""}`;
+    state.innerHTML = `<span></span>${escapeHtml(ready ? "Connected" : "Unavailable")}`;
+  }
   const grid = document.querySelector("#grafana-dashboard-grid");
   if (!grafanaDashboards.length) {
-    grid.innerHTML = '<div class="empty-state summary-empty-state">No Grafana dashboard catalog entries are available in this local build.</div>';
+    grid.innerHTML = `<div class="empty-state summary-empty-state">${escapeHtml(ready ? "No dashboards have been provisioned in Grafana." : grafanaIntegration.message)}</div>`;
     return;
   }
   grid.innerHTML = grafanaDashboards.map((dashboard) => `
     <article class="grafana-dashboard-card">
-      <header><span class="grafana-dashboard-icon">G</span><span class="grafana-dashboard-kind">${escapeHtml(dashboard.kind || "Catalog")}</span><button class="icon-button subtle" disabled aria-label="Grafana is not deployed" title="Grafana is not deployed in this local build">${icon("arrow-right")}</button></header>
-      <div class="grafana-dashboard-copy"><strong>${escapeHtml(dashboard.name)}</strong><p>${escapeHtml(dashboard.description)}</p></div>
-      <dl class="grafana-dashboard-meta"><div><dt>Folder</dt><dd>${escapeHtml(dashboard.folder)}</dd></div><div><dt>Scope</dt><dd>${escapeHtml(dashboard.scope)}</dd></div><div><dt>Owner</dt><dd>${escapeHtml(dashboard.owner)}</dd></div><div><dt>Updated</dt><dd>${escapeHtml(dashboard.updated)}</dd></div></dl>
-      <footer><span>${dashboard.panels || "--"} panels</span><span class="grafana-dashboard-unavailable">Grafana not deployed</span></footer>
+      <header><span class="grafana-dashboard-icon">G</span><span class="grafana-dashboard-kind">Grafana</span><button class="icon-button subtle" data-open-grafana-dashboard="${escapeHtml(dashboard.url)}" aria-label="Open ${escapeHtml(dashboard.title)} in Grafana" title="Open dashboard in Grafana">${icon("arrow-right")}</button></header>
+      <div class="grafana-dashboard-copy"><strong>${escapeHtml(dashboard.title)}</strong><p>Managed in Grafana and queried from Sentinel's reporting schema.</p></div>
+      <dl class="grafana-dashboard-meta"><div><dt>Folder</dt><dd>${escapeHtml(dashboard.folder)}</dd></div><div><dt>UID</dt><dd>${escapeHtml(dashboard.uid)}</dd></div><div><dt>Tags</dt><dd>${escapeHtml((dashboard.tags || []).join(", ") || "None")}</dd></div><div><dt>Access</dt><dd>Read-only catalog</dd></div></dl>
+      <footer><span>Open in Grafana</span><span class="grafana-dashboard-unavailable">${escapeHtml(grafanaIntegration.version ? `Grafana ${grafanaIntegration.version}` : "Unavailable")}</span></footer>
     </article>`).join("");
+}
+
+function openGrafana(url) {
+  if (!url) {
+    showToast(grafanaIntegration.message || "Grafana is unavailable.");
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 function selectCollectionTab(tab) {
@@ -1178,12 +1248,18 @@ function resetCredentialForm() {
   form.reset();
   form.dataset.credentialId = "";
   renderCredentialTypeOptions("Username and password", "service");
+  document.querySelector("#credential-reference-field").hidden = false;
+  document.querySelector("#credential-reference-input").disabled = false;
+  document.querySelector("#credential-type-field").hidden = false;
+  document.querySelector("#credential-type-input").disabled = false;
+  document.querySelector("#credential-submit-label").textContent = "Save credential";
+  document.querySelector("#credential-form .form-note").textContent = "This form records a path reference only. It never reads, displays, or stores the secret value.";
   document.querySelector("#credential-state-input").value = "active";
   setCredentialFormResult();
 }
 
 function renderCredentialTypeOptions(selectedType, mode) {
-  const types = mode === "ssh" ? ["SSH key"] : ["Username and password", "OLVM API credential", "API token"];
+  const types = mode.startsWith("ssh-") ? ["SSH key"] : ["Username and password", "OLVM API credential", "API token"];
   const select = document.querySelector("#credential-type-input");
   select.innerHTML = types.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join("");
   select.value = types.includes(selectedType) ? selectedType : types[0];
@@ -1193,10 +1269,19 @@ function openCredentialDialog(id, defaultType = "") {
   const credential = id ? credentials.find((item) => item.id === id) : null;
   resetCredentialForm();
   const sshKey = credential ? isSshKeyCredential(credential) : defaultType === "SSH key";
-  credentialDialogMode = sshKey ? "ssh" : "service";
+  const managedSshKey = credential && isManagedSshKey(credential);
+  credentialDialogMode = sshKey ? (credential ? (managedSshKey ? "ssh-managed" : "ssh-external") : "ssh-generate") : "service";
   renderCredentialTypeOptions(credential?.type || defaultType || "Username and password", credentialDialogMode);
-  document.querySelector("#credential-dialog-eyebrow").textContent = credential ? (sshKey ? "SSH key reference" : "Service credential reference") : (sshKey ? "SSH key reference" : "Service credential reference");
-  document.querySelector("#credential-dialog-title").textContent = credential ? `Edit ${credential.name}` : (sshKey ? "Add SSH key reference" : "Add service reference");
+  const generatedMode = credentialDialogMode === "ssh-generate" || credentialDialogMode === "ssh-managed";
+  document.querySelector("#credential-reference-field").hidden = generatedMode;
+  document.querySelector("#credential-reference-input").disabled = generatedMode;
+  document.querySelector("#credential-type-field").hidden = sshKey;
+  document.querySelector("#credential-type-input").disabled = sshKey;
+  document.querySelector("#credential-dialog-eyebrow").textContent = generatedMode ? "Managed SSH key" : (sshKey ? "External SSH key reference" : "Service credential reference");
+  document.querySelector("#credential-dialog-title").textContent = credential ? `Edit ${credential.name}` : (sshKey ? "Generate SSH key" : "Add service reference");
+  document.querySelector("#credential-submit-label").textContent = credential ? "Save changes" : (sshKey ? "Generate key" : "Save credential");
+  if (generatedMode) document.querySelector("#credential-form .form-note").textContent = "Sentinel generates an Ed25519 key pair. The private key stays in its restricted runtime store and is never shown in this portal.";
+  if (credentialDialogMode === "ssh-external") document.querySelector("#credential-form .form-note").textContent = "This record points to a key managed outside Sentinel. Sentinel does not read or display its private key.";
   if (credential) {
     document.querySelector("#credential-form").dataset.credentialId = credential.id;
     document.querySelector("#credential-name-input").value = credential.name;
@@ -1231,9 +1316,13 @@ async function saveCredential(event) {
   const form = document.querySelector("#credential-form");
   if (!form.reportValidity()) return;
   const values = credentialFormValues();
-  const endpoint = credentialDialogMode === "ssh"
-    ? `/settings/ssh-keys${values.id ? `/${encodeURIComponent(values.id)}` : ""}`
-    : `/credentials${values.id ? `/${encodeURIComponent(values.id)}` : ""}`;
+  const generatedSshKey = credentialDialogMode === "ssh-generate";
+  const sshKey = credentialDialogMode.startsWith("ssh-");
+  const endpoint = generatedSshKey
+    ? "/settings/ssh-keys/generate"
+    : sshKey
+      ? `/settings/ssh-keys/${encodeURIComponent(values.id)}`
+      : `/credentials${values.id ? `/${encodeURIComponent(values.id)}` : ""}`;
   try {
     await api(endpoint, {
       method: values.id ? "PUT" : "POST",
@@ -1241,9 +1330,31 @@ async function saveCredential(event) {
     });
     await loadBackendState();
     closeCredentialDialog();
-    showToast(`${values.name} ${values.id ? "updated" : "added"}.`);
+    showToast(`${values.name} ${generatedSshKey ? "generated" : values.id ? "updated" : "added"}.`);
   } catch (error) {
     setCredentialFormResult("error", error.message);
+  }
+}
+
+async function copySshPublicKey(publicKey) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(publicKey);
+    } else {
+      const source = document.createElement("textarea");
+      source.value = publicKey;
+      source.setAttribute("readonly", "");
+      source.style.position = "fixed";
+      source.style.opacity = "0";
+      document.body.append(source);
+      source.select();
+      const copied = document.execCommand("copy");
+      source.remove();
+      if (!copied) throw new Error("Clipboard is unavailable.");
+    }
+    showToast("Public key copied.");
+  } catch (error) {
+    showToast("Public key could not be copied.");
   }
 }
 
@@ -1578,9 +1689,9 @@ document.addEventListener("click", (event) => {
   const jump = event.target.closest("[data-go-to]");
   if (jump) { goTo(jump.dataset.goTo); return; }
   const grafanaDashboard = event.target.closest("[data-open-grafana-dashboard]");
-  if (grafanaDashboard) { showToast(`${grafanaDashboard.dataset.openGrafanaDashboard} will open in Grafana in the production deployment.`); return; }
-  if (event.target.closest("#open-grafana-button")) { showToast("Grafana will open from this catalog in the production deployment."); return; }
-  if (event.target.closest("#open-grafana-builder-button")) { showToast("Dashboard composition is handled in Grafana."); return; }
+  if (grafanaDashboard) { openGrafana(grafanaDashboard.dataset.openGrafanaDashboard); return; }
+  if (event.target.closest("#open-grafana-button")) { openGrafana(grafanaIntegration.url); return; }
+  if (event.target.closest("#open-grafana-builder-button")) { openGrafana(grafanaIntegration.url); return; }
   const collectionTab = event.target.closest("[data-collection-tab]");
   if (collectionTab) { selectCollectionTab(collectionTab.dataset.collectionTab); return; }
   const playbookTab = event.target.closest("[data-playbook-tab]");
@@ -1610,6 +1721,8 @@ document.addEventListener("click", (event) => {
     return;
   }
   if (event.target.closest("#close-playbook-editor-dialog") || event.target.closest("#cancel-playbook-editor-button")) { closePlaybookEditor(); return; }
+  const sshPublicKeyCopy = event.target.closest("[data-ssh-public-key]");
+  if (sshPublicKeyCopy) { copySshPublicKey(sshPublicKeyCopy.dataset.sshPublicKey); return; }
   const credentialEdit = event.target.closest("[data-credential-edit]");
   if (credentialEdit) { openCredentialDialog(credentialEdit.dataset.credentialEdit); return; }
   if (event.target.closest("#add-credential-button")) { openCredentialDialog(); return; }
@@ -1663,3 +1776,9 @@ loadBackendState().catch(showRequestError);
 loadSummary();
 const route = window.location.hash.slice(1);
 if (["overview", "dashboards", "inventory", "managers", "collections", "credentials", "alerts", "settings"].includes(route)) goTo(route);
+window.addEventListener("hashchange", () => {
+  const nextRoute = window.location.hash.slice(1);
+  if (["overview", "dashboards", "inventory", "managers", "collections", "credentials", "alerts", "settings"].includes(nextRoute)) {
+    goTo(nextRoute);
+  }
+});

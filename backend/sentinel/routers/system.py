@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from forgejo_client import ForgejoClient, ForgejoConfigurationError, ForgejoError, ForgejoRequestError
 
 from ..dependencies import get_forgejo_client
+from ..grafana import catalog as grafana_catalog
 from ..profiles import public_profile
 from ..records import database_connection, records
 from ..reporting import summary
@@ -22,7 +23,7 @@ def health() -> dict[str, str]:
 
 @router.get("/api/summary")
 def system_summary() -> dict[str, Any]:
-    """Return the stable, simulation-labelled summary used by the portal and future Grafana catalog."""
+    """Return the stable operational summary used by the portal and Grafana catalog."""
 
     return summary()
 
@@ -47,13 +48,25 @@ def forgejo_readiness(client: ForgejoClient = Depends(get_forgejo_client)) -> di
     }
 
 
+@router.get("/api/integrations/grafana/readiness")
+def grafana_readiness() -> dict[str, Any]:
+    """Expose Grafana's redacted portal status without proxying its API."""
+
+    status = grafana_catalog()
+    return {key: value for key, value in status.items() if key != "dashboards"}
+
+
 @router.get("/api/bootstrap")
-def bootstrap() -> dict[str, list[dict[str, Any]]]:
+def bootstrap() -> dict[str, Any]:
+    grafana = grafana_catalog()
     return {
         "hosts": records("hosts"),
         "runs": records("runs"),
         "credentials": records("credentials"),
         "managers": records("managers"),
         "collectionProfiles": [public_profile(profile) for profile in records("profiles")],
-        "grafanaDashboards": records("dashboards"),
+        # Grafana remains the owner of dashboard content and metadata. The
+        # legacy catalog table is not used as a second dashboard source.
+        "grafanaDashboards": grafana["dashboards"],
+        "grafana": {key: value for key, value in grafana.items() if key != "dashboards"},
     }

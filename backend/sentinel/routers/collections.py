@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from forgejo_client import ForgejoClient
 from playbook_migration import PlaybookMigrationError, finalize_database_profiles
 
-from ..collections import create_run, queue_profile_run, simulated_result
+from ..collections import queue_profile_run
 from ..dependencies import get_forgejo_client
 from ..playbooks import (
     create_or_update_profile_draft,
@@ -129,8 +129,19 @@ def run_collection() -> dict[str, Any]:
     active_hosts = [host for host in records("hosts") if host.get("lifecycle", "active") == "active"]
     if not active_hosts:
         raise HTTPException(status_code=409, detail="Add at least one active host before running a collection.")
-    create_run(
-        "Simulated inventory collection",
-        f"{len(active_hosts)} active hosts queued · no target contacted",
-    )
-    return {"count": len(active_hosts), **simulated_result("inventory collection")}
+    candidates = []
+    for profile in records("profiles"):
+        if profile.get("state") != "enabled":
+            continue
+        try:
+            require_runnable_source(profile)
+        except HTTPException:
+            continue
+        candidates.append(profile)
+    if not candidates:
+        raise HTTPException(
+            status_code=409,
+            detail="Create an enabled profile pinned to a reviewed Git revision before running a collection.",
+        )
+    result = queue_profile_run(candidates[0])
+    return {"count": len(active_hosts), **result}

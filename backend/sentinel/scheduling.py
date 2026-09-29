@@ -1,4 +1,4 @@
-"""Persistence and execution loop for safe, simulation-only collection schedules."""
+"""Persistence, dispatch, and supervised execution of collection schedules."""
 
 from __future__ import annotations
 
@@ -10,8 +10,10 @@ from typing import Any
 from .audit import record_exception
 from .collections import queue_profile_run
 from .cron import CronExpressionError, describe_cron_expression, parse_cron_expression
+from .execution import execute_profile_collection
 from .playbooks import require_runnable_source
-from .records import database_connection, records, store_record
+from .records import database_connection, get_record, records, store_record
+from .reporting import claim_queued_profile_runs
 
 
 LOGGER = logging.getLogger(__name__)
@@ -150,12 +152,65 @@ def run_due_collection_profiles(now: datetime | None = None) -> list[str]:
     return queued
 
 
+def execute_queued_collection_profiles() -> list[str]:
+    """Run claimed profile work from the single supervised worker authority."""
+
+    claimed_runs = claim_queued_profile_runs()
+    if not claimed_runs:
+        return []
+    try:
+        from forgejo_client import ForgejoClient
+
+        client = ForgejoClient.from_environment()
+    except Exception as exc:
+        record_exception(exc, service="worker", event_kind="collection_executor_unavailable")
+        from .reporting import complete_live_collection
+
+        for claimed in claimed_runs:
+            complete_live_collection(
+                str(claimed["run_id"]),
+                "failed",
+                failure_reason="The collection executor is unavailable.",
+            )
+        return []
+    completed: list[str] = []
+    try:
+        for claimed in claimed_runs:
+            run_id = str(claimed["run_id"])
+            profile_id = str(claimed["profile_id"])
+            profile = get_record("profiles", profile_id)
+            run = get_record("runs", run_id)
+            if profile is None or run is None:
+                from .reporting import complete_live_collection
+
+                complete_live_collection(run_id, "failed", failure_reason="Collection profile or run metadata is unavailable.")
+                continue
+            try:
+                execute_profile_collection(profile, run, client)
+            except Exception as exc:
+                # The executor itself contains source-safe failure conversion;
+                # this preserves worker availability for an unexpected defect.
+                LOGGER.exception("Collection executor failed for profile %s", profile_id)
+                record_exception(
+                    exc,
+                    service="worker",
+                    event_kind="collection_executor_failure",
+                    context={"profile_id": profile_id, "run_id": run_id},
+                )
+                continue
+            completed.append(run_id)
+    finally:
+        client.close()
+    return completed
+
+
 async def collection_scheduler(stop_event: asyncio.Event) -> None:
     """Poll the current UTC minute while allowing FastAPI shutdown to be prompt."""
 
     while not stop_event.is_set():
         try:
             await asyncio.to_thread(run_due_collection_profiles)
+            await asyncio.to_thread(execute_queued_collection_profiles)
         except Exception as exc:
             LOGGER.exception("Collection scheduler pass failed")
             record_exception(exc, service="worker", event_kind="scheduler_pass_failure")
