@@ -69,6 +69,8 @@ Validated on September 29, 2026:
   account, displayed the live dashboard catalog, and handed off through
   `/grafana/` without exposing a native Grafana host port or returning any
   Grafana credential material.
+- The Grafana subpath proxy served the actual Grafana CSS and JavaScript assets
+  and rendered the Grafana login form in a fresh browser session.
 
 No live OLVM Engine or external secret provider was contacted during this
 validation.
