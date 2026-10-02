@@ -15,16 +15,35 @@ def database_connection() -> psycopg.Connection:
 def records(kind: str) -> list[dict[str, Any]]:
     table_name, _ = TABLES[kind]
     with database_connection() as connection, connection.cursor() as cursor:
-        cursor.execute(f"SELECT payload FROM {table_name} ORDER BY created_at, id")
-        return [row[0] for row in cursor.fetchall()]
+        cursor.execute(f"SELECT id, payload FROM {table_name} ORDER BY created_at, id")
+        return [_record_with_identifier(kind, row[0], row[1]) for row in cursor.fetchall()]
 
 
 def get_record(kind: str, record_id: str) -> dict[str, Any] | None:
     table_name, _ = TABLES[kind]
     with database_connection() as connection, connection.cursor() as cursor:
-        cursor.execute(f"SELECT payload FROM {table_name} WHERE id = %s", (record_id,))
+        if kind == "hosts":
+            cursor.execute(
+                f"""
+                SELECT id, payload
+                FROM {table_name}
+                WHERE id = %s OR payload->>'name' = %s
+                ORDER BY CASE WHEN id = %s THEN 0 ELSE 1 END
+                LIMIT 1
+                """,
+                (record_id, record_id, record_id),
+            )
+        else:
+            cursor.execute(f"SELECT id, payload FROM {table_name} WHERE id = %s", (record_id,))
         row = cursor.fetchone()
-        return row[0] if row else None
+        return _record_with_identifier(kind, row[0], row[1]) if row else None
+
+
+def _record_with_identifier(kind: str, record_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    record = dict(payload)
+    if kind == "hosts":
+        record.setdefault("id", record_id)
+    return record
 
 
 def _store_record(kind: str, record: dict[str, Any], previous_id: str | None = None) -> dict[str, Any]:
@@ -54,4 +73,13 @@ def store_record(kind: str, record: dict[str, Any], previous_id: str | None = No
 def delete_record(kind: str, record_id: str) -> None:
     table_name, _ = TABLES[kind]
     with database_connection() as connection, connection.cursor() as cursor:
+        if kind == "hosts":
+            cursor.execute(
+                f"SELECT id FROM {table_name} WHERE id = %s OR payload->>'name' = %s ORDER BY CASE WHEN id = %s THEN 0 ELSE 1 END LIMIT 1",
+                (record_id, record_id, record_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return
+            record_id = row[0]
         cursor.execute(f"DELETE FROM {table_name} WHERE id = %s", (record_id,))

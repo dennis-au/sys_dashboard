@@ -7,7 +7,7 @@ from playbook_migration import (
 from .audit import audit_schema_statements
 from .config import DATABASE_URL, TABLES
 from .credentials import migrate_legacy_secret_references
-from .inventory import migrate_olvm_provenance, olvm_provenance_schema_statements
+from .inventory import migrate_host_identities, migrate_olvm_provenance, olvm_provenance_schema_statements
 from .ingestion import apply_ingestion_migration, apply_linux_system_fact_migration
 from .records import database_connection
 from .reporting import reconcile_terminal_live_run_activity, reporting_schema_statements
@@ -41,6 +41,7 @@ def initialize_database() -> None:
         apply_ingestion_migration(cursor)
         apply_linux_system_fact_migration(cursor)
     migrate_legacy_secret_references()
+    migrate_host_identities()
     migrate_olvm_provenance()
     migrate_profile_schedules()
     reconcile_terminal_live_run_activity()

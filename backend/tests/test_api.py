@@ -36,12 +36,12 @@ def cleanup_regression_records() -> None:
             "DELETE FROM sentinel.collection_run_details WHERE name LIKE '%regression-%'"
         )
         for table in (
-            "sentinel.hosts",
             "sentinel.credentials",
             "sentinel.managers",
             "sentinel.collection_profiles",
         ):
             cursor.execute(f"DELETE FROM {table} WHERE id LIKE '%regression%'")
+        cursor.execute("DELETE FROM sentinel.hosts WHERE payload->>'name' LIKE 'regression-%'")
         cursor.execute(
             "DELETE FROM sentinel.collection_runs WHERE payload->>'name' LIKE '%regression-%'"
         )
@@ -190,6 +190,7 @@ def test_manual_host_crud_and_collision_rejection(client: httpx.Client):
     created = client.post("/api/hosts", json=host)
     assert created.status_code == 201
     assert created.json()["sourceType"] == "manual"
+    assert created.json()["id"].startswith("host-")
 
     duplicate = client.post("/api/hosts", json={**host, "name": f"regression-copy-{suffix}"})
     assert duplicate.status_code == 409
@@ -200,6 +201,7 @@ def test_manual_host_crud_and_collision_rejection(client: httpx.Client):
     assert updated.status_code == 200
     assert updated.json()["name"] == updated_name
     assert updated.json()["ip"] == "198.51.100.250"
+    assert updated.json()["id"] == created.json()["id"]
 
 
 def test_reference_cascade_profiles_and_live_action_gates(client: httpx.Client):

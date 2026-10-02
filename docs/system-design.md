@@ -54,6 +54,13 @@ Every host has exactly one owner:
 | `olvm` | OLVM dynamic inventory sync | The OLVM adapter discovers and reconciles VM inventory through stable Engine identity. It never overwrites manual hosts or hard-deletes a missing resource. |
 | `manual` | Human operator | Operators create, edit, disable, and decommission the host. OLVM reconciliation cannot modify it. |
 
+Every host also has an immutable internal Sentinel ID. The display name is a
+unique, editable operator-facing value and is retained for existing name-based
+API routes, but collection source identity, queued target reservations, facts,
+and reporting projections bind to the immutable ID. A rename therefore retains
+the host's collected history, while a future retention-approved replacement
+that reuses a former display name starts without inherited history.
+
 The UI identifies source ownership in host lists and details. OLVM hosts show
 their originating manager; manually managed hosts show `Manual`.
 
@@ -268,6 +275,14 @@ snapshots. A generic collector must never update `sentinel.hosts` ownership or
 lifecycle fields. Only authoritative OLVM reconciliation may create or update
 OLVM-owned inventory using stable Engine identity; it must preserve manual and
 unresolved hosts and must not prune from a partial or failed run.
+
+The portal Inventory response is a configuration-plus-projection read model:
+it joins Sentinel-owned host configuration to the latest accepted per-host
+collection outcome, Linux system projection, and capacity projection by
+immutable host ID. It exposes collection state, collection time, observed OS,
+and capacity without copying those observations into the host record. The
+legacy host-name-keyed migration remaps mutable run metadata and projections;
+sanitized artifact manifests and ledger evidence remain immutable.
 
 The existing collection-run and reporting tables are the migration starting
 point. The artifact-ingestion migration is versioned as

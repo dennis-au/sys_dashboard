@@ -156,19 +156,19 @@ def test_successful_live_collection_finalizes_legacy_activity_before_updating_pr
         "id": "profile-linux-facts",
         "source": {"path": "inventory/linux-facts.yml", "commitSha": SHA},
     }
-    run = {"id": "run-live-success", "expectedSourceInstances": [{"type": "linux", "id": "linux-one"}]}
-    host = {"name": "linux-one", "lifecycle": "active"}
+    run = {"id": "run-live-success", "expectedSourceInstances": [{"type": "linux", "id": "host-linux-one"}]}
+    host = {"id": "host-linux-one", "name": "linux-one", "lifecycle": "active"}
     events = []
 
     monkeypatch.setattr(execution, "mark_collection_running", lambda run_id: events.append(("running", run_id)))
     monkeypatch.setattr(execution, "require_runnable_source", lambda item: item["source"])
     monkeypatch.setattr(execution, "read_profile_playbook", lambda item, client: {"content": "---\n- hosts: all\n  gather_facts: true\n  tasks: []\n"})
-    monkeypatch.setattr(execution, "get_record", lambda kind, record_id: host if kind == "hosts" and record_id == "linux-one" else None)
-    monkeypatch.setattr(execution, "_build_inventory", lambda workspace, hosts, item: ({"all": {"hosts": {"linux-one": {}}}}, []))
+    monkeypatch.setattr(execution, "get_record", lambda kind, record_id: host if kind == "hosts" and record_id == "host-linux-one" else None)
+    monkeypatch.setattr(execution, "_build_inventory", lambda workspace, hosts, item: ({"all": {"hosts": {"host-linux-one": {}}}}, []))
     monkeypatch.setattr(
         execution,
         "_read_callback_events",
-        lambda path, host_ids: {"linux-one": {"state": "success", "facts": {"hostname": "linux-one"}}},
+        lambda path, host_ids: {"host-linux-one": {"state": "success", "facts": {"hostname": "linux-one"}}},
     )
     monkeypatch.setattr(execution, "_linux_fact_records", lambda *args, **kwargs: [{"recordType": "linux.system_fact.v1"}])
     monkeypatch.setattr(

@@ -23,6 +23,12 @@ manager and collection actions:
 - The summary reports `operational`, `degraded`, or `unavailable` from live
   run state. Historical simulation rows remain readable but cannot make the
   portal look operational.
+- Hosts now use immutable Sentinel IDs while retaining unique editable display
+  names. Startup migrates mutable run metadata and host-linked reporting
+  projections to the stable ID without rewriting sanitized immutable artifact
+  evidence. Inventory is a configuration-plus-reporting read model, so
+  accepted collection state, observed Linux OS, and capacity are shown without
+  writing collected values back into host ownership or lifecycle records.
 - Development and production Compose files use a target-facing collection
   network only for API/worker, an artifact volume for the worker, and a
   read-only runtime secret directory. The production deployer creates that
@@ -85,6 +91,21 @@ Validated on September 29, 2026:
   the API returned only the administrator name and status, Grafana accepted the
   replacement, and the retained private-volume credential survived a forced
   Grafana container recreation.
+
+Validated on October 2, 2026:
+
+- The immutable-host migration and reporting-backed Inventory regression suite
+  passed locally and on `192.168.0.111`: `100 passed`, with one existing
+  Starlette deprecation warning.
+- Startup on `192.168.0.111` applied
+  `2026-10-02-host-identity-v1`. The existing `192.168.0.110` integration
+  target retained its accepted collection history under
+  `host-7cb1e0830ef34794aacaacb976770cdb`; bootstrap now reports its successful
+  collection, CentOS 9 / x86_64 projection, and memory utilization.
+- A fresh read-only facts-only run
+  `run-534c24b4480d4efe898b220afacc8920` completed at
+  `2026-10-02T03:58:10Z`. The reserved source instance, target result,
+  sanitized artifact, and Inventory projection all used the immutable host ID.
 
 No live OLVM Engine or external secret provider was contacted during this
 validation.

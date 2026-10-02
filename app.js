@@ -19,6 +19,7 @@ const lifecycleName = { active: "Active", disabled: "Disabled", decommissioned: 
 const managerStateName = { ready: "Ready", connected: "Connected", testing: "Testing", syncing: "Syncing" };
 const collectionProfileStateName = { enabled: "Enabled", paused: "Paused" };
 const credentialStateName = { active: "Active", disabled: "Disabled" };
+const defaultManualHostEnvironments = ["Production", "Staging", "Operations"];
 let activeFilter = "all";
 let activeSourceFilter = "all";
 let activeCollectionTab = "runs";
@@ -1499,9 +1500,20 @@ function resetManualHostForm() {
   form.dataset.hostName = "";
   document.querySelector("#manual-host-user-input").value = "root";
   document.querySelector("#manual-host-port-input").value = "22";
+  renderManualHostEnvironmentOptions();
   document.querySelector("#manual-host-lifecycle-input").value = "active";
   renderCredentialOptions();
   setManualHostConnectionResult();
+}
+
+function renderManualHostEnvironmentOptions(selectedEnvironment = "Production") {
+  const select = document.querySelector("#manual-host-environment-input");
+  const environment = typeof selectedEnvironment === "string" ? selectedEnvironment.trim() : "";
+  const options = environment && !defaultManualHostEnvironments.includes(environment)
+    ? [environment, ...defaultManualHostEnvironments]
+    : defaultManualHostEnvironments;
+  select.innerHTML = options.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("");
+  select.value = environment || defaultManualHostEnvironments[0];
 }
 
 function setManualHostConnectionResult(type, message) {
@@ -1526,7 +1538,7 @@ function openManualHostDialog(name) {
     document.querySelector("#manual-host-port-input").value = host.connectionPort || "22";
     renderCredentialOptions(host.credential);
     document.querySelector("#manual-host-role-input").value = host.role;
-    document.querySelector("#manual-host-environment-input").value = host.environment;
+    renderManualHostEnvironmentOptions(host.environment);
     document.querySelector("#manual-host-lifecycle-input").value = host.lifecycle || "active";
   }
   document.querySelector("#manual-host-dialog").showModal();

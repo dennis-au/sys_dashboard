@@ -389,7 +389,7 @@ def reserve_live_collection(
                 (
                     f"result-{uuid4().hex}",
                     str(run["id"]),
-                    str(host["name"]),
+                    str(host.get("id") or host["name"]),
                     str(host["name"]),
                     str(host.get("sourceType", source_type)),
                     str(host.get("sourceManagerId")) if host.get("sourceManagerId") else manager_id,
@@ -639,6 +639,103 @@ def _rows(query: str) -> list[dict[str, Any]]:
     with database_connection() as connection, connection.cursor(row_factory=dict_row) as cursor:
         cursor.execute(query)
         return list(cursor.fetchall())
+
+
+def _capacity_label(used: int | None, total: int | None) -> str | None:
+    if used is None or total is None:
+        return None
+    value = percentage(used, total)
+    return f"{value:g}%" if value is not None else None
+
+
+def _operating_system_label(row: dict[str, Any]) -> str | None:
+    distribution = str(row.get("distribution") or "").strip()
+    version = str(row.get("distribution_version") or "").strip()
+    architecture = str(row.get("architecture") or "").strip()
+    name = " ".join(part for part in (distribution, version) if part)
+    if not name:
+        return None
+    return f"{name} · {architecture}" if architecture else name
+
+
+def inventory_read_model() -> list[dict[str, Any]]:
+    """Join host configuration to accepted operational projections for the portal.
+
+    Host ownership, lifecycle, and connection settings remain in ``sentinel.hosts``.
+    Collection state and observations are read-only projections keyed by the
+    immutable Sentinel host ID.
+    """
+
+    query = """
+        SELECT
+          hosts.id AS host_id,
+          hosts.payload AS host_payload,
+          latest_result.run_id AS collection_run_id,
+          latest_result.state AS collection_state,
+          latest_result.completed_at AS collection_completed_at,
+          system_fact.distribution,
+          system_fact.distribution_version,
+          system_fact.architecture,
+          capacity.memory_total_bytes,
+          capacity.memory_used_bytes,
+          capacity.disk_total_bytes,
+          capacity.disk_used_bytes
+        FROM sentinel.hosts AS hosts
+        LEFT JOIN LATERAL (
+          SELECT run_id, state, completed_at
+          FROM sentinel.collection_host_results
+          WHERE host_id = hosts.id
+            AND execution_mode = 'live'
+            AND state <> 'queued'
+            AND completed_at IS NOT NULL
+          ORDER BY completed_at DESC, id DESC
+          LIMIT 1
+        ) AS latest_result ON TRUE
+        LEFT JOIN sentinel.linux_system_current AS system_fact
+          ON system_fact.host_id = hosts.id
+        LEFT JOIN LATERAL (
+          SELECT memory_total_bytes, memory_used_bytes, disk_total_bytes, disk_used_bytes
+          FROM sentinel.host_capacity_facts
+          WHERE host_id = hosts.id
+            AND execution_mode = 'live'
+          ORDER BY observed_at DESC, id DESC
+          LIMIT 1
+        ) AS capacity ON TRUE
+        ORDER BY hosts.payload->>'name', hosts.id
+    """
+    with database_connection() as connection, connection.cursor(row_factory=dict_row) as cursor:
+        cursor.execute(query)
+        rows = list(cursor.fetchall())
+
+    inventory: list[dict[str, Any]] = []
+    for row in rows:
+        host = dict(row["host_payload"])
+        host["id"] = str(row["host_id"])
+        completed_at = iso_timestamp(row["collection_completed_at"])
+        collection_state = row["collection_state"]
+        host["collection"] = {
+            "state": collection_state or "not_collected",
+            "collectedAt": completed_at,
+            "runId": row["collection_run_id"],
+        }
+        host["collected"] = completed_at or "Not collected"
+
+        operating_system = _operating_system_label(row)
+        if operating_system:
+            host["os"] = operating_system
+        memory = _capacity_label(row["memory_used_bytes"], row["memory_total_bytes"])
+        disk = _capacity_label(row["disk_used_bytes"], row["disk_total_bytes"])
+        if memory:
+            host["memory"] = memory
+        if disk:
+            host["disk"] = disk
+
+        if collection_state == "unreachable":
+            host["status"] = "unreachable"
+        elif collection_state in {"failed", "skipped"}:
+            host["status"] = "review"
+        inventory.append(host)
+    return inventory
 
 
 def load_summary_data() -> dict[str, list[dict[str, Any]]]:

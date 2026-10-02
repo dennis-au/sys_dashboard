@@ -48,6 +48,7 @@ def test_grafana_client_returns_a_safe_read_only_catalog(tmp_path: Path):
                         "folderTitle": "Sentinel",
                         "tags": ["sentinel", "linux"],
                         "type": "dash-db",
+                        "url": "/grafana/d/sentinel-linux-facts/sentinel-linux-facts",
                     },
                     {"uid": "not a valid uid", "title": "Ignored"},
                 ],
@@ -68,9 +69,32 @@ def test_grafana_client_returns_a_safe_read_only_catalog(tmp_path: Path):
             "title": "Sentinel Linux facts",
             "folder": "Sentinel",
             "tags": ["sentinel", "linux"],
-            "url": "/grafana/d/sentinel-linux-facts",
+            "url": "/grafana/d/sentinel-linux-facts/sentinel-linux-facts",
         }
     ]
+
+
+def test_grafana_client_rejects_an_unsafe_catalog_dashboard_url(tmp_path: Path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/search":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "uid": "sentinel-linux-facts",
+                        "title": "Sentinel Linux facts",
+                        "url": "https://untrusted.example/d/sentinel-linux-facts/sentinel-linux-facts",
+                    }
+                ],
+            )
+        raise AssertionError(f"Unexpected Grafana request: {request.method} {request.url}")
+
+    client = GrafanaClient(
+        settings_for(tmp_path),
+        httpx.Client(base_url="http://grafana:3000", transport=httpx.MockTransport(handler)),
+    )
+
+    assert client.dashboards()[0].url == "/grafana/d/sentinel-linux-facts"
 
 
 def test_grafana_settings_reject_unsafe_or_unavailable_configuration(tmp_path: Path):

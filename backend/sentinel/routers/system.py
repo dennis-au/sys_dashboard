@@ -8,7 +8,7 @@ from ..dependencies import get_forgejo_client
 from ..grafana import catalog as grafana_catalog
 from ..profiles import public_profile
 from ..records import database_connection, records
-from ..reporting import summary
+from ..reporting import inventory_read_model, summary
 
 
 router = APIRouter(tags=["system"])
@@ -60,7 +60,7 @@ def grafana_readiness() -> dict[str, Any]:
 def bootstrap() -> dict[str, Any]:
     grafana = grafana_catalog()
     return {
-        "hosts": records("hosts"),
+        "hosts": inventory_read_model(),
         "runs": records("runs"),
         "credentials": records("credentials"),
         "managers": records("managers"),

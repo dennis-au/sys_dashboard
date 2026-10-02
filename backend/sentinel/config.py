@@ -33,7 +33,7 @@ DATABASE_URL = configured_database_url()
 INTERNAL_AUDIT_LOG_MAX_EVENTS = 10_000
 
 TABLES = {
-    "hosts": ("sentinel.hosts", "name"),
+    "hosts": ("sentinel.hosts", "id"),
     "credentials": ("sentinel.credentials", "id"),
     "managers": ("sentinel.managers", "id"),
     "profiles": ("sentinel.collection_profiles", "id"),

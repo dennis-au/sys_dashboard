@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import uuid4
 
 import psycopg
 from fastapi import HTTPException
@@ -18,6 +19,17 @@ from .validation import (
     require_reference,
     require_text,
 )
+
+
+HOST_ID_MIGRATION_VERSION = "2026-10-02-host-identity-v1"
+
+
+def _new_host_id() -> str:
+    return f"host-{uuid4().hex}"
+
+
+def _host_identifier(host: dict[str, Any]) -> str:
+    return str(host.get("id") or host.get("name") or "").strip()
 
 
 def olvm_provenance_schema_statements() -> list[str]:
@@ -105,7 +117,7 @@ def validate_olvm_provenance(host: dict[str, Any], previous_host_id: str | None 
     if state == "retired" and identity["lifecycle"] != "retired":
         raise HTTPException(status_code=422, detail="Retired OLVM reconciliation state requires a retired lifecycle.")
 
-    host_id = str(host["name"])
+    host_id = _host_identifier(host)
     with database_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
             """
@@ -166,7 +178,12 @@ def store_olvm_identity(cursor: psycopg.Cursor, host_id: str, host: dict[str, An
 
 
 def store_host(record: dict[str, Any], previous_id: str | None = None) -> dict[str, Any]:
-    existing = get_record("hosts", previous_id or str(record["name"]))
+    record = dict(record)
+    existing = get_record("hosts", previous_id or _host_identifier(record))
+    if existing:
+        record["id"] = str(existing["id"])
+    else:
+        record["id"] = _host_identifier(record) or _new_host_id()
     if existing and existing.get("sourceType", "olvm") == "olvm":
         identity_fields = ("sourceManagerId", "engineResourceType", "engineResourceId")
         has_stable_identity = all(existing.get(field) for field in identity_fields)
@@ -183,11 +200,9 @@ def store_host(record: dict[str, Any], previous_id: str | None = None) -> dict[s
             status_code=409,
             detail="An OLVM reconciliation cannot overwrite a manually managed host.",
         )
-    validate_olvm_provenance(record, previous_id)
-    host_id = str(record["name"])
+    validate_olvm_provenance(record, existing["id"] if existing else previous_id)
+    host_id = str(record["id"])
     with database_connection() as connection, connection.cursor() as cursor:
-        if previous_id and previous_id != host_id:
-            cursor.execute("DELETE FROM sentinel.hosts WHERE id = %s", (previous_id,))
         cursor.execute(
             """
             INSERT INTO sentinel.hosts (id, payload) VALUES (%s, %s)
@@ -237,9 +252,9 @@ def migrate_olvm_provenance() -> None:
 
 def ensure_unique_host(name: str, address: str, original_name: str | None = None) -> None:
     for host in records("hosts"):
-        if host["name"] != original_name and host["name"].casefold() == name.casefold():
+        if host.get("id") != original_name and host["name"].casefold() == name.casefold():
             raise HTTPException(status_code=409, detail=f"Host name {name} is already in inventory.")
-        if host["name"] != original_name and any(
+        if host.get("id") != original_name and any(
             item.casefold() == address.casefold() for item in host_addresses(host)
         ):
             raise HTTPException(status_code=409, detail=f"Management address {address} is already in inventory.")
@@ -250,8 +265,9 @@ def build_host(payload: dict[str, Any], existing: dict[str, Any] | None = None) 
     address = require_text(payload, "address")
     credential = require_reference(require_text(payload, "credential"))
     credential_exists(credential)
-    ensure_unique_host(name, address, existing["name"] if existing else None)
+    ensure_unique_host(name, address, existing["id"] if existing else None)
     return {
+        "id": existing["id"] if existing else _new_host_id(),
         "name": name,
         "role": require_text(payload, "role"),
         "status": existing.get("status", "healthy") if existing else "healthy",
@@ -297,7 +313,7 @@ def build_authoritative_olvm_host(
 ) -> dict[str, Any]:
     name = require_text(payload, "name")
     address = require_text(payload, "address")
-    ensure_unique_host(name, address, existing["name"] if existing else None)
+    ensure_unique_host(name, address, existing["id"] if existing else None)
 
     if existing and existing.get("sourceType", "olvm") != "olvm":
         raise HTTPException(status_code=409, detail="An OLVM reconciliation cannot overwrite a manually managed host.")
@@ -309,6 +325,7 @@ def build_authoritative_olvm_host(
 
     candidate = {
         **(existing or {}),
+        "id": existing["id"] if existing else _new_host_id(),
         "name": name,
         "role": require_text(payload, "role"),
         "environment": require_text(payload, "environment"),
@@ -380,7 +397,104 @@ def reconcile_authoritative_olvm_host(payload: dict[str, Any]) -> dict[str, Any]
         return store_record("hosts", build_authoritative_olvm_host(payload))
 
     record = build_authoritative_olvm_host(payload, existing)
-    return store_record("hosts", record, previous_id=existing["name"])
+    return store_record("hosts", record, previous_id=existing["id"])
+
+
+def find_host_by_name(name: str) -> dict[str, Any] | None:
+    """Resolve a display name for name-based HTTP compatibility only."""
+
+    target = str(name).casefold()
+    return next((host for host in records("hosts") if str(host.get("name", "")).casefold() == target), None)
+
+
+def migrate_host_identities(*, force: bool = False) -> None:
+    """Give legacy display-name keyed hosts an immutable Sentinel identity.
+
+    Sanitized artifacts remain immutable evidence. Mutable projections and queued
+    run metadata are remapped so the portal and future executions use the new
+    stable identity.
+    """
+
+    with database_connection() as connection, connection.transaction(), connection.cursor() as cursor:
+        cursor.execute(
+            "CREATE TABLE IF NOT EXISTS sentinel.schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
+        )
+        if not force:
+            cursor.execute("SELECT 1 FROM sentinel.schema_migrations WHERE version = %s", (HOST_ID_MIGRATION_VERSION,))
+            if cursor.fetchone() is not None:
+                return
+        cursor.execute("SELECT id, payload FROM sentinel.hosts ORDER BY id FOR UPDATE")
+        legacy_hosts = list(cursor.fetchall())
+        remap: dict[str, str] = {}
+        normalized: dict[str, dict[str, Any]] = {}
+        for legacy_id, payload in legacy_hosts:
+            value = dict(payload)
+            existing_id = str(value.get("id") or "")
+            host_id = existing_id if existing_id.startswith("host-") else _new_host_id()
+            remap[str(legacy_id)] = host_id
+            value["id"] = host_id
+            normalized[str(legacy_id)] = value
+
+        if remap:
+            for legacy_id, host_id in remap.items():
+                cursor.execute(
+                    "INSERT INTO sentinel.hosts (id, payload) VALUES (%s, %s) ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()",
+                    (host_id, Jsonb(normalized[legacy_id])),
+                )
+
+            for table_name, column_name in (
+                ("sentinel.olvm_host_identities", "host_id"),
+                ("sentinel.collection_host_results", "host_id"),
+                ("sentinel.host_capacity_facts", "host_id"),
+                ("sentinel.collection_alerts", "host_id"),
+                ("sentinel.linux_system_current", "host_id"),
+                ("sentinel.linux_filesystem_current", "host_id"),
+                ("sentinel.linux_filesystem_snapshots", "host_id"),
+            ):
+                for legacy_id, host_id in remap.items():
+                    cursor.execute(
+                        f"UPDATE {table_name} SET {column_name} = %s WHERE {column_name} = %s",
+                        (host_id, legacy_id),
+                    )
+
+            for table_name, key_column, payload_column in (
+                ("sentinel.collection_run_details", "run_id", "metadata"),
+                ("sentinel.collection_runs", "id", "payload"),
+            ):
+                cursor.execute(f"SELECT {key_column}, {payload_column} FROM {table_name} FOR UPDATE")
+                for record_id, payload in cursor.fetchall():
+                    value = dict(payload)
+                    expected = value.get("expectedSourceInstances")
+                    if not isinstance(expected, list):
+                        continue
+                    changed = False
+                    rewritten = []
+                    for item in expected:
+                        if not isinstance(item, dict):
+                            rewritten.append(item)
+                            continue
+                        updated = dict(item)
+                        if updated.get("type") == "linux" and str(updated.get("id")) in remap:
+                            updated["id"] = remap[str(updated["id"])]
+                            changed = True
+                        rewritten.append(updated)
+                    if changed:
+                        value["expectedSourceInstances"] = rewritten
+                        statement = f"UPDATE {table_name} SET {payload_column} = %s WHERE {key_column} = %s"
+                        if table_name == "sentinel.collection_runs":
+                            statement = (
+                                f"UPDATE {table_name} SET {payload_column} = %s, updated_at = NOW() "
+                                f"WHERE {key_column} = %s"
+                            )
+                        cursor.execute(statement, (Jsonb(value), record_id))
+
+            for legacy_id, host_id in remap.items():
+                if legacy_id != host_id:
+                    cursor.execute("DELETE FROM sentinel.hosts WHERE id = %s", (legacy_id,))
+        cursor.execute(
+            "INSERT INTO sentinel.schema_migrations (version) VALUES (%s) ON CONFLICT (version) DO NOTHING",
+            (HOST_ID_MIGRATION_VERSION,),
+        )
 
 
 def record_olvm_resource_missing(

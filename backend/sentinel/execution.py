@@ -239,26 +239,27 @@ def _build_inventory(
     keys_directory = workspace / "keys"
     keys_directory.mkdir(mode=0o700)
     for host in hosts:
-        host_id = str(host.get("name") or "").strip()
+        host_id = str(host.get("id") or host.get("name") or "").strip()
+        host_name = str(host.get("name") or host_id).strip()
         if not _fact_identifier(host_id):
-            failures.append({"host_id": host_id or "unknown", "host_name": host_id or "unknown", "state": "failed", "reason": "Host identity is unsupported by the canonical fact contract."})
+            failures.append({"host_id": host_id or "unknown", "host_name": host_name or "unknown", "state": "failed", "reason": "Host identity is unsupported by the canonical fact contract."})
             continue
         address = host.get("ip") or host.get("address")
         if not isinstance(address, str) or not address.strip():
-            failures.append({"host_id": host_id, "host_name": host_id, "state": "failed", "reason": "Target management address is unavailable."})
+            failures.append({"host_id": host_id, "host_name": host_name, "state": "failed", "reason": "Target management address is unavailable."})
             continue
         try:
             username, material = _host_credentials(host, profile)
         except CollectionExecutionError as exc:
-            failures.append({"host_id": host_id, "host_name": host_id, "state": "failed", "reason": str(exc)})
+            failures.append({"host_id": host_id, "host_name": host_name, "state": "failed", "reason": str(exc)})
             continue
         try:
             port = int(str(host.get("connectionPort") or "22"))
         except ValueError:
-            failures.append({"host_id": host_id, "host_name": host_id, "state": "failed", "reason": "Target SSH port is invalid."})
+            failures.append({"host_id": host_id, "host_name": host_name, "state": "failed", "reason": "Target SSH port is invalid."})
             continue
         if not 1 <= port <= 65535:
-            failures.append({"host_id": host_id, "host_name": host_id, "state": "failed", "reason": "Target SSH port is invalid."})
+            failures.append({"host_id": host_id, "host_name": host_name, "state": "failed", "reason": "Target SSH port is invalid."})
             continue
         variables: dict[str, Any] = {"ansible_host": address.strip(), "ansible_user": username, "ansible_port": port}
         if host_key_arguments is not None:
@@ -310,6 +311,7 @@ def _linux_fact_records(
     source_path: str,
     source_commit_sha: str,
     sequence_start: int,
+    display_name: str | None = None,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     system_payload = {
@@ -389,7 +391,7 @@ def _linux_fact_records(
                 "collectedAt": collected_at,
                 "observedAt": collected_at,
                 "source": {"type": "linux", "id": host_id},
-                "resource": {"kind": "host_capacity", "id": "system", "displayName": host_id},
+                "resource": {"kind": "host_capacity", "id": "system", "displayName": display_name or host_id},
                 "payload": {
                     "cpuCores": cpu_cores,
                     "memoryTotalBytes": memory_total,
@@ -478,9 +480,23 @@ def execute_profile_collection(
         expected_ids = [str(item.get("id")) for item in expected if isinstance(item, dict) and item.get("type") == "linux"] if isinstance(expected, list) else []
         if not expected_ids:
             raise CollectionExecutionError("The selected profile has no Linux targets reserved for collection.")
-        hosts = [host for host_id in expected_ids if (host := get_record("hosts", host_id)) is not None and host.get("lifecycle", "active") == "active"]
-        missing_ids = set(expected_ids) - {str(host.get("name")) for host in hosts}
-        outcomes.extend({"host_id": host_id, "host_name": host_id, "state": "skipped", "reason": "Target is no longer active in Sentinel inventory."} for host_id in sorted(missing_ids))
+        resolved_hosts = {
+            host_id: host
+            for host_id in expected_ids
+            if (host := get_record("hosts", host_id)) is not None
+        }
+        hosts = [host for host in resolved_hosts.values() if host.get("lifecycle", "active") == "active"]
+        active_ids = {str(host.get("id") or host.get("name")) for host in hosts}
+        inactive_ids = set(expected_ids) - active_ids
+        outcomes.extend(
+            {
+                "host_id": host_id,
+                "host_name": str(resolved_hosts.get(host_id, {}).get("name") or host_id),
+                "state": "skipped",
+                "reason": "Target is no longer active in Sentinel inventory.",
+            }
+            for host_id in sorted(inactive_ids)
+        )
         with tempfile.TemporaryDirectory(prefix="sentinel-collection-") as raw_workspace:
             workspace = Path(raw_workspace)
             playbook_path = workspace / "playbook.yml"
@@ -493,6 +509,10 @@ def execute_profile_collection(
             inventory, setup_failures = _build_inventory(workspace, hosts, profile)
             outcomes.extend(setup_failures)
             runnable_ids = set(inventory["all"]["hosts"])
+            host_names = {
+                str(host.get("id") or host.get("name")): str(host.get("name") or host.get("id"))
+                for host in hosts
+            }
             if not runnable_ids:
                 final_state = _outcome_state(outcomes)
                 record_host_outcomes(run_id, outcomes)
@@ -511,13 +531,13 @@ def execute_profile_collection(
             for host_id in sorted(runnable_ids):
                 event = events.get(host_id)
                 if event is None:
-                    outcomes.append({"host_id": host_id, "host_name": host_id, "state": "failed", "reason": "Collector returned no fact result for this target."})
+                    outcomes.append({"host_id": host_id, "host_name": host_names.get(host_id, host_id), "state": "failed", "reason": "Collector returned no fact result for this target."})
                 elif event["state"] == "success":
-                    outcomes.append({"host_id": host_id, "host_name": host_id, "state": "success"})
+                    outcomes.append({"host_id": host_id, "host_name": host_names.get(host_id, host_id), "state": "success"})
                 else:
-                    outcomes.append({"host_id": host_id, "host_name": host_id, "state": event["state"], "reason": "Target did not complete fact gathering."})
+                    outcomes.append({"host_id": host_id, "host_name": host_names.get(host_id, host_id), "state": event["state"], "reason": "Target did not complete fact gathering."})
             if completed.returncode != 0 and not any(item.get("state") in {"failed", "unreachable"} for item in outcomes):
-                outcomes.extend({"host_id": host_id, "host_name": host_id, "state": "failed", "reason": "Ansible collection did not complete successfully."} for host_id in sorted(runnable_ids))
+                outcomes.extend({"host_id": host_id, "host_name": host_names.get(host_id, host_id), "state": "failed", "reason": "Ansible collection did not complete successfully."} for host_id in sorted(runnable_ids))
             collected_at = _timestamp(datetime.now(timezone.utc))
             fact_records: list[dict[str, Any]] = []
             for outcome in outcomes:
@@ -526,7 +546,16 @@ def execute_profile_collection(
                 event = events.get(str(outcome["host_id"]))
                 if event is None:
                     continue
-                generated = _linux_fact_records(run_id, str(outcome["host_id"]), event["facts"], collected_at=collected_at, source_path=str(source["path"]), source_commit_sha=str(source["commitSha"]), sequence_start=len(fact_records) + 1)
+                generated = _linux_fact_records(
+                    run_id,
+                    str(outcome["host_id"]),
+                    event["facts"],
+                    collected_at=collected_at,
+                    source_path=str(source["path"]),
+                    source_commit_sha=str(source["commitSha"]),
+                    sequence_start=len(fact_records) + 1,
+                    display_name=str(outcome.get("host_name") or outcome["host_id"]),
+                )
                 if not generated:
                     outcome["state"] = "failed"
                     outcome["reason"] = "Collector returned no supported Linux facts."

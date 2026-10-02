@@ -19,6 +19,7 @@ DEFAULT_GRAFANA_TOKEN_FILE = "/run/grafana-service-credentials/grafana_api_token
 DEFAULT_GRAFANA_ADMIN_PASSWORD_FILE = "/run/grafana-admin-credentials/admin_password"
 MAX_DASHBOARDS = 100
 _UID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+_DASHBOARD_PATH_PATTERN = re.compile(r"^/d/([A-Za-z0-9_-]{1,40})(?:/([A-Za-z0-9._~-]{1,190}))?$")
 _USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _credential_reset_lock = threading.Lock()
 
@@ -157,7 +158,7 @@ class GrafanaClient:
                     title=title.strip(),
                     folder=folder.strip() if isinstance(folder, str) and folder.strip() else "General",
                     tags=tags,
-                    url=_dashboard_url(self.settings.public_url, uid),
+                    url=_dashboard_url(self.settings.public_url, uid, item.get("url")),
                 )
             )
         return dashboards
@@ -295,8 +296,27 @@ def _grafana_root_url(public_url: str) -> str:
     return public_url if public_url.endswith("/") else f"{public_url}/"
 
 
-def _dashboard_url(public_url: str, uid: str) -> str:
-    return f"{_grafana_root_url(public_url)}d/{quote(uid, safe='')}"
+def _dashboard_url(public_url: str, uid: str, grafana_path: Any = None) -> str:
+    """Build a same-origin Grafana handoff from a catalogued dashboard path."""
+
+    fallback = f"/d/{quote(uid, safe='')}"
+    if isinstance(grafana_path, str):
+        parsed = urlsplit(grafana_path.strip())
+        configured_prefix = urlsplit(public_url).path.rstrip("/")
+        dashboard_path = parsed.path
+        if configured_prefix and dashboard_path.startswith(f"{configured_prefix}/"):
+            dashboard_path = dashboard_path[len(configured_prefix) :]
+        match = _DASHBOARD_PATH_PATTERN.fullmatch(dashboard_path)
+        if (
+            not parsed.scheme
+            and not parsed.netloc
+            and not parsed.query
+            and not parsed.fragment
+            and match
+            and match.group(1) == uid
+        ):
+            fallback = dashboard_path
+    return f"{_grafana_root_url(public_url).rstrip('/')}{fallback}"
 
 
 def _write_runtime_password(path: Path, password: str) -> None:

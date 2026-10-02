@@ -103,4 +103,4 @@ def _expected_source_instances(profile: dict[str, Any], hosts: list[dict[str, An
     playbook = str(profile.get("playbook", "")).lower()
     if "olvm" in playbook:
         return [{"type": "olvm", "id": str(manager["id"])} for manager in records("managers")]
-    return [{"type": "linux", "id": str(host["name"])} for host in hosts]
+    return [{"type": "linux", "id": str(host.get("id") or host["name"])} for host in hosts]

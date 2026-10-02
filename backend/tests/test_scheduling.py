@@ -83,9 +83,9 @@ def test_profile_queue_reserves_owned_source_instances_before_dispatch(monkeypat
         collections,
         "records",
         lambda kind: [
-            {"name": "linux-one", "lifecycle": "active"},
-            {"name": "linux-disabled", "lifecycle": "disabled"},
-            {"name": "manual-one", "lifecycle": "active", "sourceType": "manual"},
+            {"id": "host-linux-one", "name": "linux-one", "lifecycle": "active"},
+            {"id": "host-linux-disabled", "name": "linux-disabled", "lifecycle": "disabled"},
+            {"id": "host-manual-one", "name": "manual-one", "lifecycle": "active", "sourceType": "manual"},
         ]
         if kind == "hosts"
         else [],
@@ -101,6 +101,19 @@ def test_profile_queue_reserves_owned_source_instances_before_dispatch(monkeypat
 
     assert captured["trigger"] == "schedule"
     assert captured["expected_source_instances"] == [
-        {"type": "linux", "id": "linux-one"},
-        {"type": "linux", "id": "manual-one"},
+        {"type": "linux", "id": "host-linux-one"},
+        {"type": "linux", "id": "host-manual-one"},
+    ]
+
+
+def test_linux_target_scope_excludes_disabled_hosts_until_reenabled(monkeypatch):
+    profile = runnable_profile(playbook="inventory/linux-facts.yml", scope="Manual Linux hosts")
+    host = {"id": "host-lifecycle", "name": "lifecycle-host", "sourceType": "manual", "lifecycle": "disabled"}
+
+    monkeypatch.setattr(collections, "records", lambda kind: [host] if kind == "hosts" else [])
+    assert collections._target_hosts(profile) == []
+
+    host["lifecycle"] = "active"
+    assert collections._expected_source_instances(profile, collections._target_hosts(profile)) == [
+        {"type": "linux", "id": "host-lifecycle"}
     ]
