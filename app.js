@@ -789,7 +789,18 @@ function openGrafana(url) {
     showToast(grafanaIntegration.message || "Grafana is unavailable.");
     return;
   }
-  window.open(url, "_blank", "noopener,noreferrer");
+  let destination;
+  try {
+    destination = new URL(url, window.location.origin);
+  } catch {
+    showToast("Grafana returned an invalid dashboard address.");
+    return;
+  }
+  if (destination.origin !== window.location.origin || !destination.pathname.startsWith("/grafana/")) {
+    showToast("Grafana returned an unsafe dashboard address.");
+    return;
+  }
+  window.open(destination.href, "_blank", "noopener,noreferrer");
 }
 
 function selectCollectionTab(tab) {
